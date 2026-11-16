@@ -14,7 +14,7 @@ Files land in task-scripts/piw-tui_out/<output_file>; every raw return is kept i
 Copy the .rs files into tui/src/ui/ yourself once reviewed.
 """
 
-MODEL = "gemini-4-argon"  # cheaper: a flash-class model; the engine does not care
+MODEL = "google/gemini-4-argon"  # OpenRouter id; cheaper: google/gemini-3.7-flash ($0.75/$3.75 per M). Override with --model
 CTX = "task-scripts/ctx"
 MAX_TOKENS = 16000  # per slice; a return cut off at this is marked failed, not written
 
@@ -375,7 +375,7 @@ CHEAPER_ENDPOINT = "https://api.cheaperinference.com/v1/chat/completions"
 OPENROUTER_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
 TIMEOUT, MAX_RETRIES, RETRY_DELAY = 600, 3, 2.0
 MAX_CONTEXT_CHARS = 32 * 1024  # per context file; anything cut is warned about
-PRICE_IN_PER_M, PRICE_OUT_PER_M = 0.90, 4.50  # gemini-4-argon on cheaperinference; estimate only
+PRICE_IN_PER_M, PRICE_OUT_PER_M = 2.00, 10.00  # google/gemini-4-argon on OpenRouter (checked 2026-11-16); estimate only, update with MODEL
 TaskSpec = Dict[str, Any]
 
 def make_http_request(url: str, headers: dict, data: dict = None, method: str = "GET") -> dict:
@@ -566,7 +566,7 @@ def main():
             total_in += n
             print(f"    {t['custom_id']:<16} {n:>7,} chars in  -> {t['output_file']}")
         est = total_in / 4 * PRICE_IN_PER_M / 1e6 + len(tasks) * 6000 * PRICE_OUT_PER_M / 1e6
-        print(f"\n[dry run] {len(tasks)} slice(s), ~{total_in // 4:,} tokens in, ~$ {est:.3f} at argon rates (assumes ~6k tokens out per slice). No API call made.")
+        print(f"\n[dry run] {len(tasks)} slice(s), ~{total_in // 4:,} tokens in, ~$ {est:.3f} at PRICE_* rates (assumes ~6k tokens out per slice). No API call made.")
         return
     run_pipeline(
         api_key=key,
