@@ -324,16 +324,13 @@ Write `clipboard.rs`: copy text to the user's clipboard from inside a terminal p
 sequence (works over SSH and in piw's remote mode, needs no external tool). Used by `y` to copy the selected run id.
 `base64` 0.22 is already a dependency (use `base64::engine::general_purpose::STANDARD` and `Engine`).
 
-Facts: the sequence is ESC ] 52 ; c ; <base64 of the text> BEL (some terminals want ST = ESC \\ instead). Inside tmux
-the sequence must be wrapped in a DCS passthrough: ESC P tmux ; <the sequence with every ESC doubled> ESC \\ , and tmux
-sets the TMUX environment variable. Cap the payload at 100_000 bytes of input text and refuse bigger input.
+Facts: the sequence is ESC ] 52 ; c ; <base64 of the text> BEL. No multiplexer handling. Cap the payload at 100_000 bytes of input text and refuse bigger input.
 
 Public surface:
-    pub fn osc52_sequence(text: &str, in_tmux: bool) -> Result<String, String>;   // Err on empty or oversized text
-    pub fn copy(text: &str) -> Result<(), String>;      // writes osc52_sequence(text, std::env::var_os("TMUX").is_some()) to stdout and flushes; map I/O errors to String
+    pub fn osc52_sequence(text: &str) -> Result<String, String>;   // Err on empty or oversized text
+    pub fn copy(text: &str) -> Result<(), String>;      // writes osc52_sequence(text) to stdout and flushes; map I/O errors to String
     pub fn copied_notice(text: &str) -> String;         // "copied 20261115T021043931Z-landing-9197de92"; long text shortened with "…" after 40 chars
-Tests: exact sequence for a known string (compute the base64 of "hello" by hand: aGVsbG8=), the tmux wrapping with doubled
-ESCs, empty and oversized rejection, the notice shortening, multi-byte text round-trips through base64 decode.
+Tests: exact sequence for a known string (compute the base64 of "hello" by hand: aGVsbG8=), empty and oversized rejection, the notice shortening, multi-byte text round-trips through base64 decode.
 """ + RULES,
     },
     {
