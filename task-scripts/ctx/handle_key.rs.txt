@@ -1,0 +1,137 @@
+// tui/src/ui/mod.rs handle_key (lines 1157-1292), verbatim
+fn handle_key(app: &mut App, summaries: &[RunSummary], key: KeyEvent) {
+    if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        app.quit = true;
+        return;
+    }
+    if app.theme_picker.is_some() {
+        handle_theme_picker_key(app, key);
+        return;
+    }
+    match key.code {
+        KeyCode::Char('q') => app.quit = true,
+        KeyCode::Char(',') => app.open_theme_picker(),
+        KeyCode::Char('b') if app.show_sidebar => {
+            app.sidebar_collapsed = !app.sidebar_collapsed;
+            app.sidebar_explicit = true;
+        }
+        KeyCode::Tab => {
+            app.focus = match (app.focus, app.show_sidebar) {
+                (Focus::Runs, _) => Focus::Graph,
+                (Focus::Graph, _) => Focus::Inspector,
+                (Focus::Inspector, true) => Focus::Runs,
+                (Focus::Inspector, false) => Focus::Graph,
+            };
+        }
+        // Replay transport (global).
+        KeyCode::Char('[') => app.step_back(),
+        KeyCode::Char(']') => app.step_forward(),
+        KeyCode::Char('{') => app.slower_playback(),
+        KeyCode::Char('}') => app.faster_playback(),
+        KeyCode::Char(' ') => app.apply_timeline_action(timeline::TimelineAction::TogglePlayback),
+        KeyCode::Home | KeyCode::Char('g') => app.move_to_start(),
+        KeyCode::End | KeyCode::Char('G') | KeyCode::Char('L') => app.rejoin_live(),
+        KeyCode::Char('z') | KeyCode::Char('+') | KeyCode::Char('-') => {
+            app.node_style = match app.node_style {
+                GraphNodeStyle::Line => GraphNodeStyle::Box,
+                GraphNodeStyle::Box => GraphNodeStyle::Line,
+            };
+        }
+        KeyCode::Char('f') => app.follow = !app.follow,
+        KeyCode::Char('t') => app.select_inspector_tab(app.tab.next()),
+        KeyCode::Char('1') => app.select_inspector_tab(InspectorTab::Steps),
+        KeyCode::Char('2') => app.select_inspector_tab(InspectorTab::Trace),
+        KeyCode::Char('3') => app.select_inspector_tab(InspectorTab::Conversation),
+        KeyCode::Char('4') => app.select_inspector_tab(InspectorTab::Info),
+        _ => match app.focus {
+            Focus::Runs => match key.code {
+                KeyCode::Up | KeyCode::Char('k') => app.select_run(summaries, -1),
+                KeyCode::Down | KeyCode::Char('j') => app.select_run(summaries, 1),
+                _ => {}
+            },
+            Focus::Graph => {
+                let (x, y) = app.graph_offset;
+                match key.code {
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        app.graph_offset = (x, y - 2);
+                        app.follow = false;
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        app.graph_offset = (x, y + 2);
+                        app.follow = false;
+                    }
+                    KeyCode::Left | KeyCode::Char('h') => {
+                        app.graph_offset = (x - 4, y);
+                        app.follow = false;
+                    }
+                    KeyCode::Right | KeyCode::Char('l') => {
+                        app.graph_offset = (x + 4, y);
+                        app.follow = false;
+                    }
+                    KeyCode::Char('0') => {
+                        app.graph_offset = (0, 0);
+                        app.follow = true;
+                    }
+                    _ => {}
+                }
+            }
+            Focus::Inspector => match key.code {
+                KeyCode::Up | KeyCode::Char('k') => match app.tab {
+                    InspectorTab::Steps => app.step_back(),
+                    InspectorTab::Trace => {
+                        app.trace_selected = app.trace_selected.saturating_sub(1);
+                        app.trace_payload_expanded = false;
+                    }
+                    InspectorTab::Conversation => {
+                        app.conversation_selected = app.conversation_selected.saturating_sub(1);
+                        app.conversation_payload_expanded = false;
+                        app.conversation_follow = false;
+                    }
+                    InspectorTab::Info => {
+                        app.inspector_scroll = app.inspector_scroll.saturating_sub(1)
+                    }
+                },
+                KeyCode::Down | KeyCode::Char('j') => match app.tab {
+                    InspectorTab::Steps => app.step_forward(),
+                    InspectorTab::Trace => {
+                        app.trace_selected = app.trace_selected.saturating_add(1);
+                        app.trace_payload_expanded = false;
+                    }
+                    InspectorTab::Conversation => {
+                        app.conversation_selected = app.conversation_selected.saturating_add(1);
+                        app.conversation_payload_expanded = false;
+                        app.conversation_follow = false;
+                    }
+                    InspectorTab::Info => app.inspector_scroll += 1,
+                },
+                KeyCode::Enter => match app.tab {
+                    InspectorTab::Steps => {
+                        app.inspector_expanded = !app.inspector_expanded;
+                        if app.inspector_expanded {
+                            app.request_selected_artifacts();
+                        }
+                    }
+                    InspectorTab::Trace => app.trace_payload_expanded = !app.trace_payload_expanded,
+                    InspectorTab::Conversation => {
+                        app.conversation_payload_expanded = !app.conversation_payload_expanded;
+                        if app.conversation_payload_expanded {
+                            app.request_conversation_artifacts();
+                        }
+                    }
+                    InspectorTab::Info => {}
+                },
+                KeyCode::Char('v') if app.tab == InspectorTab::Trace => {
+                    app.trace_scope = app.trace_scope.next();
+                    app.trace_selected = 0;
+                    app.trace_payload_expanded = false;
+                    app.inspector_scroll = 0;
+                }
+                KeyCode::Char('<') if app.tab == InspectorTab::Info => app.page_info(-1),
+                KeyCode::Char('>') if app.tab == InspectorTab::Info => app.page_info(1),
+                KeyCode::PageUp => app.inspector_scroll = app.inspector_scroll.saturating_sub(10),
+                KeyCode::PageDown => app.inspector_scroll += 10,
+                _ => {}
+            },
+        },
+    }
+}
