@@ -3,6 +3,7 @@
 
 pub mod canvas;
 pub mod client;
+pub mod client_commands;
 pub mod format;
 pub mod layout;
 pub mod protocol;
@@ -11,4 +12,5 @@ pub mod server;
 pub mod session;
 pub mod state;
 pub mod theme;
+pub mod trace_match;
 pub mod ui;

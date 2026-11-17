@@ -335,7 +335,7 @@ mod tests {
         assert!(with_answer.contains("checkpoint"));
         assert!(with_answer.contains("Pi session"));
 
-        let without_answer_ cases = [
+        let without_answer_cases = [
             vec_str(&[]),
             vec_str(&["cancel"]),
             vec_str(&["cancel", "human-answer"]),

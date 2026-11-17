@@ -3,11 +3,27 @@
 //! transport. Works against a local runs directory, a single run, or a
 //! `piw serve` WebSocket server; all three feed the same view model.
 
+#[allow(dead_code)] // until wired into handle_key
+mod clipboard;
 mod controls;
 mod conversation;
+#[allow(dead_code)] // until wired into handle_key
+mod external_launch;
 mod graph;
+#[allow(dead_code)] // until wired into handle_key
+mod graph_nav;
+#[allow(dead_code)] // until wired into handle_key
+mod help;
+#[allow(dead_code)] // until wired into handle_key
+mod notice;
+#[allow(dead_code)] // until wired into handle_key
+mod run_command;
+#[allow(dead_code)] // until wired into handle_key
+mod run_filter;
 mod theme_picker;
 mod timeline;
+#[allow(dead_code)] // until wired into handle_key
+mod trace_picker;
 
 use crate::client::RemoteRuns;
 use crate::format::{format_duration, parse_timestamp_ms, sanitize_text};
