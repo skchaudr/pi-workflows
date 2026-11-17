@@ -1,0 +1,186 @@
+{
+  "sourceRepo": "/Volumes/Mini-SSD/offload/repos/grok-build",
+  "sourceHead": "5d8f340880f8704f880781e15ba2fffe4ff3fea7",
+  "files": [
+    {
+      "path": ".pi/agents/delivery-policy.md",
+      "sha256": "8d2938b738b09a9ee6d948d61e8cf40481c844ba5d207c882eacab473c50ec5d",
+      "operation": "snapshot-retain-active"
+    },
+    {
+      "path": ".pi/agents/lane-brief-reviewer.md",
+      "sha256": "81d0356b6d51d7c754e91ccb7fe381ae75c3426c5969c03c55f3fb59b964b9bc",
+      "operation": "snapshot-retain-active"
+    },
+    {
+      "path": ".pi/agents/lane-build-reviewer.md",
+      "sha256": "a1ed59df2fb66e0fb0f016033d698ab40684e22457367b0fad68a42103b7787e",
+      "operation": "snapshot-retain-active"
+    },
+    {
+      "path": ".pi/agents/lane-scout.md",
+      "sha256": "9c86d721f28f0a81342bd976063632fff13d710a6b96d191526816642b239bbd",
+      "operation": "snapshot-retain-active"
+    },
+    {
+      "path": ".pi/agents/lane-worker.md",
+      "sha256": "5b10f156886591baf425433e8045f3dd62e8dc731a9adf71c337839384c7e5e3",
+      "operation": "snapshot-retain-active"
+    },
+    {
+      "path": ".pi/prompts/kickoff.md",
+      "sha256": "b079def9a966ffc36b9ef6081ffb8da681c30e3a06f85df15906049d8f798bb5",
+      "operation": "move"
+    },
+    {
+      "path": ".pi/workflows/README-kickoff.md",
+      "sha256": "e60a16fbc081d59329b6ef1003c9a169591a39658acceea02bb6070223ef1cc5",
+      "operation": "move"
+    },
+    {
+      "path": ".pi/workflows/README-landing.md",
+      "sha256": "842b0eeb19aaff6206079939ba19d64d841e750f6d2a1e92498f48094e221e93",
+      "operation": "move"
+    },
+    {
+      "path": ".pi/workflows/acceptance-checks.workflow.ts",
+      "sha256": "6cc71d0ddeb8668a89529ec9947e5b7528aacd31b05a478a5b967859746b24db",
+      "operation": "move"
+    },
+    {
+      "path": ".pi/workflows/establish-kickoff.workflow.ts",
+      "sha256": "f935af7fff53e20f501e830d3a3d9eba3399b2c55b2a7d325605ceecb87d6924",
+      "operation": "move"
+    },
+    {
+      "path": ".pi/workflows/handoff-kickoff.workflow.ts",
+      "sha256": "d91b39836154b1b2936b3d0ccbd358cc07bef6783e16b2d34de89b7dafccf350",
+      "operation": "move"
+    },
+    {
+      "path": ".pi/workflows/integrate-landing.workflow.ts",
+      "sha256": "0384938f5531193b710cf329ecf4764977ac7928922755fac91b7e8752d6c058",
+      "operation": "move"
+    },
+    {
+      "path": ".pi/workflows/kickoff-review-disposition.md",
+      "sha256": "d1c8b8200774f54af3af469c999247be6a781198e6e1f090a3956b8d1ebff983",
+      "operation": "move"
+    },
+    {
+      "path": ".pi/workflows/landing-input.example.json",
+      "sha256": "3694cce29a6a63415e49160b51b6dc3593e239fc3a178e563422e77c5582b9b5",
+      "operation": "move"
+    },
+    {
+      "path": ".pi/workflows/landing.workflow.ts",
+      "sha256": "e066641be0c0989ce65b02cf18fb9ad58120e75da789f6fd4b6baa67f9b6d1b3",
+      "operation": "move"
+    },
+    {
+      "path": ".pi/workflows/launch-landing.workflow.ts",
+      "sha256": "81775dd84de0413ef38f576148e898b249478a7b6166d020095d6081737a3c47",
+      "operation": "move"
+    },
+    {
+      "path": ".pi/workflows/lib/approved-packets.mjs",
+      "sha256": "a4f900c92d611058e57753a3248d9036e4ad683f9040535d1b7fedc7eba95c6e",
+      "operation": "move"
+    },
+    {
+      "path": ".pi/workflows/lib/independent-review.workflow.ts",
+      "sha256": "94ddd059df0e66521eb27f8b996b97048c578792e02e62190642f33752e0b5b0",
+      "operation": "move"
+    },
+    {
+      "path": ".pi/workflows/lib/landing-contracts.mjs",
+      "sha256": "4516cf4d0e5077db9bb2be5e93b5888b8bc2a2918e45d1a23da3768eac7d51c8",
+      "operation": "move"
+    },
+    {
+      "path": ".pi/workflows/lib/task-run.workflow.ts",
+      "sha256": "9f8a698863691878b5f75901aef16f1cbe362a140ce0cffe8029f1c9e6f70dca",
+      "operation": "move"
+    },
+    {
+      "path": ".pi/workflows/lib/verify-landing.mjs",
+      "sha256": "5c4fdedf7d124ff66000533d26b0f289dd5f8fd6c7dcd4abee1b1833b452c166",
+      "operation": "move"
+    },
+    {
+      "path": ".pi/workflows/lib/visible-command.workflow.ts",
+      "sha256": "02b1e04df85b30660628ebea7acbd3a55da9ede5a4e0381d6f2eb037fd3245b9",
+      "operation": "move"
+    },
+    {
+      "path": ".pi/workflows/prepare-landing-pi.sh",
+      "sha256": "161f50b0e30b2fcafcf0fd707255a4d51e2f10a6ff31507c40868b41bde290c2",
+      "operation": "move"
+    },
+    {
+      "path": ".pi/workflows/prepare-landing.workflow.ts",
+      "sha256": "43fd6da24d282d5ea46bf68aadcbce7504584a717ff56f0cf2e7ae92b2fb0b26",
+      "operation": "move"
+    },
+    {
+      "path": ".pi/workflows/reviewed-task.workflow.ts",
+      "sha256": "a0ac3185eaa4ba2d3350231f74f8c5c8cd3fc1ee928e1aa78b4707161b92cd0c",
+      "operation": "move"
+    },
+    {
+      "path": ".pi/workflows/step.workflow.ts",
+      "sha256": "7854edf0b99563475a0eb47e8924dee3805966eb044dd2281f5c5ec75ceb51db",
+      "operation": "snapshot-and-restore-original"
+    },
+    {
+      "path": ".pi/workflows/tests/handoff-kickoff.test.mjs",
+      "sha256": "57abefa3c270541ed252b6c9927cad0b9a18d22387cfe60539b2b6acf286b553",
+      "operation": "move"
+    },
+    {
+      "path": ".pi/workflows/tests/landing-approval.test.mjs",
+      "sha256": "3f0bcdaa8be46456b1cbac85d3cff66e98dbca6af0d22ab122372e902bb43eaa",
+      "operation": "move"
+    },
+    {
+      "path": ".pi/workflows/tests/landing-contracts.test.mjs",
+      "sha256": "fa005bb67036385968f19468866ad5ba1c067bec696997f205c4d724bfa2fa15",
+      "operation": "move"
+    },
+    {
+      "path": ".pi/workflows/tests/landing-engine.test.mjs",
+      "sha256": "90b0edad276fb05b383fcc0e77272592002e1a0600e7baa4a90b03dca19717a8",
+      "operation": "move"
+    },
+    {
+      "path": ".pi/workflows/tests/landing-gate.test.mjs",
+      "sha256": "4d0699da34a271c39ad3c9bb712c86dc2c518873859fc4c2127afb6dbc2ccae8",
+      "operation": "move"
+    },
+    {
+      "path": ".pi/workflows/tests/landing-visible.test.mjs",
+      "sha256": "df3ab36f3fcf5b566d6b749fa5135255bcc8edac0676944c5525a039443fda15",
+      "operation": "move"
+    },
+    {
+      "path": ".pi/workflows/tests/landing-workflows.test.mjs",
+      "sha256": "6c70d7bdafe2aeb372f1a24d04b048532f1339b8fd11fe076b46e236bc7f674f",
+      "operation": "move"
+    },
+    {
+      "path": ".pi/workflows/tests/prepare-landing-launcher.test.mjs",
+      "sha256": "74be3684ab60ae26861dcd460d62b194d273eb3c6a4b3f96a91baa8c9ec5f920",
+      "operation": "move"
+    },
+    {
+      "path": ".pi/workflows/tests/verify-landing.test.mjs",
+      "sha256": "43e02816febab4e2e15fc18a349feaadcd06ab95c535e8efed14a7c92e5db795",
+      "operation": "move"
+    },
+    {
+      "path": "AGENTS.md",
+      "sha256": "208ed4ffbf16472884f0ebc83246fbe08207793c1c323a19fcec31b261b4d58d",
+      "operation": "snapshot-retain-active"
+    }
+  ]
+}
