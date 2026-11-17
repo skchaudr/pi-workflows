@@ -135,3 +135,24 @@ fn handle_key(app: &mut App, summaries: &[RunSummary], key: KeyEvent) {
         },
     }
 }
+
+// tui/src/ui/mod.rs handle_theme_picker_key (1137-1155), verbatim: keys while the theme picker is open
+fn handle_theme_picker_key(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Up | KeyCode::Char('k') => {
+            if let Some(picker) = app.theme_picker.as_mut() {
+                picker.move_previous();
+            }
+            app.preview_selected_theme();
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if let Some(picker) = app.theme_picker.as_mut() {
+                picker.move_next();
+            }
+            app.preview_selected_theme();
+        }
+        KeyCode::Enter => app.apply_theme_picker(),
+        KeyCode::Esc => app.cancel_theme_picker(),
+        _ => {}
+    }
+}

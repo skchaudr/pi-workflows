@@ -136,11 +136,10 @@ pub struct ServerResponse {
     pub error: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
 pub fn canonical_json(value: &Value) -> Result<String, String> { .. }
 
 // ---- tui/src/format.rs
-pub fn sanitize_text(text: &str) -> String { .. }   // strips ANSI/control chars, folds whitespace
+pub fn sanitize_text(text: &str) -> String { .. }   // strips ANSI/control chars; each run of tabs/line breaks becomes one space
 
 // ---- tui/src/ui/theme_picker.rs
 pub fn popup_rect(area: Rect) -> Rect { .. }   // centered popup, at most 52 wide

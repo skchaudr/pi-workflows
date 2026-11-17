@@ -33,7 +33,8 @@ pub struct TraceRecord {
 RULES = """
 Hard rules: Rust 2021, ratatui 0.30, crossterm 0.29, serde_json. No new crates, no `unsafe`, no `unwrap()` or
 `expect()` on anything that comes from I/O, the server, or the user. The file must compile at its output path inside the
-existing crate (use `crate::` paths, and `super::` for `RunSummary`, as the interfaces file shows; do not redefine those types).
+existing crate (use `crate::` paths; from a file in `tui/src/ui/` the type `RunSummary` is `super::RunSummary`; do not
+redefine types the interfaces file lists). Derive `Debug, Clone, PartialEq` on every public enum and plain-data struct you define.
 Put unit tests in a `#[cfg(test)] mod tests` at the bottom; they must not need a terminal, network, or files.
 Return the complete file in ONE ```rust block and nothing else: no prose before or after.
 """
@@ -55,7 +56,7 @@ Public surface (the wiring calls exactly this):
         pub fn open(&mut self);                       // editing = true
         pub fn toggle_active(&mut self);
         pub fn handle_key(&mut self, key: crossterm::event::KeyEvent) -> FilterOutcome;   // only while editing
-        pub fn title(&self, shown: usize, total: usize) -> String;   // "Runs 3/41 · /landing paused · active"; plain "Runs" when not filtering
+        pub fn title(&self, shown: usize, total: usize) -> String;   // filtering: " Runs 3/41 · /landing paused · active ↔ "; not filtering: " Runs (41) ↔ " (the existing title; keep it exactly)
     }
     pub enum FilterOutcome { Edited, Kept, Cleared, Ignored }
     pub fn visible<'a>(summaries: &'a [super::RunSummary], filter: &RunFilter) -> Vec<&'a super::RunSummary>;
@@ -73,6 +74,7 @@ Behaviour:
   a muted placeholder `type to filter, space = AND` when empty and editing.
 Tests: AND of terms, case-insensitivity, status-label match ("paused"), run_title None, active_only, order preserved,
 reconcile when selected is filtered out and when nothing matches, each FilterOutcome, the title strings.
+`RunSummary` derives nothing (no Debug, Clone or PartialEq): build test values field by field and compare run ids, never the structs.
 """ + RULES,
     },
     {
@@ -84,9 +86,12 @@ Write `run_command.rs`: the UI-side state for pausing, resuming and cancelling t
 `p` pause/resume, `x` cancel. Sending the request is another module's job; yours decides WHAT to send and what to show.
 
 Facts about the server (verified against the running server; you cannot look them up):
-- `display.controls` (Vec<String>) is the list of actions the server currently allows for the run. Real values:
-  paused run -> ["resume","cancel"]; waiting on a checkpoint -> ["pause","cancel","answer"]; finished run -> [].
-  Only offer what is listed, and read it at key-press time.
+- `display.controls` (Vec<String>) is the list of actions the server currently allows for the run. The server builds it so:
+  running or waiting -> ["pause","cancel"], plus "answer" (pending checkpoint), "human-answer" (pending decision) or
+  "update","submit" (pending agent request); paused -> ["resume","cancel"]; queued -> ["cancel"], or ["resume","cancel"]
+  when the queue entry is parked; completed/failed/timed_out -> [], or ["cancel"] while its origin turn is still active;
+  "review" is appended for an ambiguous run. Other strings may appear in future: ignore them.
+  Offer only pause/resume/cancel, only when listed, and read the list at key-press time.
 - Operations: "run.pause", "run.resume", "run.cancel". Cancel is terminal and cannot be undone: never on one keypress.
 - Outcomes returned by the server: accepted, adopted, rejected, conflict, notFound, claimLost, unavailable.
   accepted and adopted are success; every other outcome carries an error string to show.
@@ -106,9 +111,9 @@ Public surface:
         pub fn handle_key(&self, key: crossterm::event::KeyEvent) -> ConfirmOutcome;
         pub fn prompt(&self) -> String;                       // "cancel landing 20261115T…? y/N"
     }
-    pub enum ConfirmOutcome { Send, Dismissed }               // only a plain 'y' or 'Y' sends; every other key dismisses
+    pub enum ConfirmOutcome { Send, Dismissed }               // KeyCode::Char('y') or Char('Y') with no modifier other than SHIFT sends (terminals report 'Y' with SHIFT set); every other key dismisses
     pub fn render_confirm(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, confirm: &CancelConfirm, palette: &crate::theme::Palette);   // one line, palette.warning
-Tests: toggle_op for each real controls value above, cancel needs "cancel", confirm accepts only y/Y (also check 'n',
+Tests: toggle_op for each real controls value above, cancel needs "cancel", confirm accepts y, Y, and Y with SHIFT (also check 'n',
 Enter, Esc, Ctrl-Y), notices for every outcome string, the checkpoint wording appears only with "answer".
 """ + RULES,
     },
@@ -118,38 +123,60 @@ Enter, Esc, Ctrl-Y), notices for every outcome string, the checkpoint wording ap
         "context_files": [f"{CTX}/interfaces.rs.txt", "tui/src/protocol.rs"],
         "prompt": """
 Write `client_commands.rs`: the pure protocol side of sending a state-changing command (pause/resume/cancel) over the
-workflow client connection. It does no I/O: it builds frames, tracks them, and parses responses. The wiring later
-pushes your frames onto the existing connection queue. `protocol.rs` is attached in full: reuse `ClientRequest`,
-`ServerResponse`, `ServerMessage`, `parse_server_message`, `canonical_json` and `PROTOCOL_ID`; do not redefine them.
+workflow client connection. It does no I/O: it builds requests, tracks them until answered, and classifies responses.
+`protocol.rs` is attached in full: reuse `ClientRequest`, `ServerResponse` and `PROTOCOL_ID`; do not redefine them, and do
+not write an encoder (`protocol::encode_request` exists; each transport adds its own line ending, and a frame must never
+contain a line break).
 
-Server rules (verified; not in the files):
-- Every request needs a non-empty `idempotencyKey`; without one the server closes the connection.
-- One user action = one fresh idempotency key. If the connection drops before the response, the retry MUST reuse the
-  same idempotency key with a NEW requestId; the server then returns the stored receipt instead of acting twice.
-  Reusing a requestId or key with a different payload is a conflict.
-- Commands here use `run_id = Some(id)` and `payload = json!({})`.
+How the existing client sends (verified in client.rs, which you cannot see):
+- There is no outbound queue. Each pass of the connection loop calls one function that builds the requests still owed
+  from shared state, then sends them. The hand wiring will keep one `CommandTracker` in that shared state and call
+  `take_unsent` from that function. On every reconnect the wiring calls `connection_lost` first.
+- The existing response handler turns every rejected/notFound/unavailable response into a global connection error. The
+  wiring will call `owns(request_id)` first and hand owned responses to `complete` instead.
+- Existing view requests use ids "piw-<pid>-<n>" with a counter that restarts on every connection, and
+  `idempotency_key == request_id`. Yours must NOT follow that.
+
+Server rules (verified in the server source):
+- Every request needs a non-empty `idempotencyKey`.
+- The server stores each command by (clientId, idempotencyKey) in its database, across piw restarts, and a requestId
+  must be globally unique. A repeated key with the same payload returns the stored receipt without acting again; a
+  repeated key or requestId with a different payload is a conflict. So ids must be unique across processes and
+  restarts: pid plus a counter is NOT enough, because pids are reused.
+- One user action = one fresh idempotency key. If the connection drops before the response, the retry reuses the same
+  idempotency key with a NEW requestId.
+- Commands use `run_id = Some(id)`, `expected_revision = None`, `payload = json!({})`, `client_id = "piw-<pid>"`,
+  `message_type = "request"`, `schema = PROTOCOL_ID`.
 - Outcomes: accepted, adopted, rejected, conflict, notFound, claimLost, unavailable. accepted/adopted = success.
-- The existing helper in client.rs builds requests with `idempotency_key == request_id`; yours must NOT: the key stays
-  stable across retries while the request id changes.
 
 Public surface:
-    pub fn build_command(counter: &mut u64, operation: &str, run_id: &str) -> ClientRequest;   // fresh requestId + fresh idempotencyKey; clientId "piw-<pid>"
-    pub fn retry_command(counter: &mut u64, original: &ClientRequest) -> ClientRequest;        // same key/operation/runId/payload, new requestId
-    pub fn frame(request: &ClientRequest) -> Result<String, String>;                           // canonical JSON via canonical_json, plus "\\n"
-    #[derive(Debug, Clone, PartialEq)] pub struct CommandOutcome { pub outcome: String, pub error: Option<String> }
-    impl CommandOutcome { pub fn is_success(&self) -> bool; }
-    pub fn parse_command_response(text: &str) -> Option<(String, CommandOutcome)>;             // (requestId, outcome) for a Response frame; None for hello/event/garbage
+    pub struct CommandIds { .. }
+    impl CommandIds {
+        pub fn new() -> Self;                      // nonce = "<pid>-<unix time in nanoseconds at creation>" (SystemTime; use 0 if the clock is before the epoch)
+        pub fn with_nonce(nonce: &str) -> Self;    // for tests
+        pub fn next(&mut self) -> String;          // "piwc-<nonce>-<n>", n = 1, 2, 3 ...
+    }
+    pub fn build_command(ids: &mut CommandIds, operation: &str, run_id: &str) -> ClientRequest;   // requestId and idempotencyKey are two different ids.next() values
+    pub fn retry_command(ids: &mut CommandIds, original: &ClientRequest) -> ClientRequest;        // same key/operation/runId/payload/clientId, new requestId
+    pub struct CommandOutcome { pub outcome: String, pub error: Option<String> }
+    impl CommandOutcome { pub fn from_response(response: &ServerResponse) -> Self;  pub fn is_success(&self) -> bool; }
     pub struct CommandTracker { .. }
     impl CommandTracker {
         pub fn new() -> Self;
-        pub fn track(&mut self, request: ClientRequest);                    // remember until answered
+        pub fn track(&mut self, request: ClientRequest);       // remember until answered; not sent yet
+        pub fn take_unsent(&mut self, ids: &mut CommandIds) -> Vec<ClientRequest>;
+            // requests to send now, in track order, each returned once per connection. A request that was already sent
+            // on an earlier connection comes back as retry_command(..), and the tracker then answers to the NEW requestId.
+        pub fn connection_lost(&mut self);                     // every unanswered request becomes unsent again
+        pub fn owns(&self, request_id: &str) -> bool;
         pub fn complete(&mut self, request_id: &str, outcome: CommandOutcome) -> Option<(ClientRequest, CommandOutcome)>;   // removes the tracked request and returns it with its outcome; None if unknown
-        pub fn pending_for_retry(&self) -> Vec<ClientRequest>;              // everything unanswered, for resend after reconnect
         pub fn is_pending(&self, run_id: &str) -> bool;
     }
-Tests: canonical frame has sorted keys and no spaces and ends in a newline; retry keeps the key and changes the
-requestId; two build_command calls never share a key; parse a real accepted response, a rejected response with error,
-a hello frame (None), and malformed JSON (None); tracker retry-after-reconnect flow.
+Tests: build_command gives a requestId different from its key, and two calls share neither; two CommandIds with
+different nonces never collide; retry keeps the key and changes the requestId; from_response for an accepted response
+and for a rejected one with an error; tracker: take_unsent returns a request once and nothing on the second call; after
+connection_lost it returns it again with the same key and a new requestId that `owns` and `complete` recognise, while
+the old requestId is no longer owned; is_pending clears after complete.
 """ + RULES,
     },
     {
@@ -160,16 +187,17 @@ a hello frame (None), and malformed JSON (None); tracker retry-after-reconnect f
 Write `trace_match.rs`: find the agent traces that belong to a workflow run, using the `grok-traces` tool.
 
 Facts (verified on the machine; you cannot look them up):
-- `grok-traces list --json --limit 5000` prints one JSON object per line (JSON Lines), ~30 ms for 1300 sessions.
+- `grok-traces list --json --limit 5000` prints one JSON object per line (JSON Lines), ~25 ms for 1400 sessions.
   A real line, trimmed to the fields that matter:
   {"id":"pi:9b1c2db1f2b9595e22b795d0","source":"pi","title":"block:01a1da95-7f29-712c-be9d-dfb48934c29a","model":"gemini-3.8-flash-high",
    "path":"/Users/sab-mini/.pi/agent/sessions/--Volumes-Mini-SSD-offload-repos-grok-build--/2026-11-14T15-04-33-126Z_01a1da96-b866-7737-8cc0-7880da63a060.jsonl",
    "cwd":"/Volumes/Mini-SSD/offload/repos/grok-build","status":"active","parent_id":null}
-  Other fields exist and may be null or absent (`model`, `title` can be null). Lines are not guaranteed to be valid: skip bad ones.
+  Other fields exist and may be null or absent (`model` is null in about a third of records; treat `title` the same way). Lines are not guaranteed to be valid: skip bad ones.
 - A run's session binding (a serde_json::Value the viewer already has) looks like:
   {"schema":"pi-workflows.session-binding.v1","runId":"2026…","boundAt":"…","cwd":"/Volumes/Mini-SSD/offload/repos/grok-build",
    "piSessionId":"01a1da96-b866-7737-8cc0-7880da63a060",
    "piSessionFile":"/Users/sab-mini/.pi/agent/sessions/--Volumes-Mini-SSD-offload-repos-grok-build--/2026-11-14T15-04-33-126Z_01a1da96-b866-7737-8cc0-7880da63a060.jsonl"}
+- `piSessionId` is always present in a binding; `piSessionFile` is optional and may be missing.
 - The run's own trace is the record whose `path` equals `piSessionFile`. Subagent sessions started by it live under a
   directory named after the session id, e.g. ".../rex-adapter/01a1da96-b866-7737-8cc0-7880da63a060/280c2339-1bda-4600-8fde-4cd8a6ed3883/session.jsonl";
   match those when the session id is a whole PATH COMPONENT. A session id that is merely a substring of a longer
@@ -179,14 +207,14 @@ Facts (verified on the machine; you cannot look them up):
 Define exactly this type (another module consumes it, so do not change it):
 """ + TRACE_RECORD + """
 Public surface:
-    pub fn session_from_binding(binding: &serde_json::Value) -> Option<(String, String)>;   // (piSessionFile, piSessionId); both required, non-empty strings
+    pub fn session_from_binding(binding: &serde_json::Value) -> Option<(Option<String>, String)>;   // (piSessionFile, piSessionId); the id is required and non-empty; a missing, null or empty file is None
     pub fn parse_list(jsonl: &str) -> Vec<TraceRecord>;                                       // skips malformed lines; null model/title -> ""
-    pub fn matches_for_session(records: Vec<TraceRecord>, session_file: &str, session_id: &str) -> Vec<TraceRecord>;   // exact path match first, then component matches in input order
+    pub fn matches_for_session(records: Vec<TraceRecord>, session_file: Option<&str>, session_id: &str) -> Vec<TraceRecord>;   // exact path match first (when the file is known), then component matches in input order
     pub fn list_traces() -> Result<Vec<TraceRecord>, String>;                                 // runs `grok-traces list --json --limit 5000`; NotFound -> Err("grok-traces is not on PATH"); nonzero exit -> Err with stderr's first line
-    pub fn traces_for_binding(binding: Option<&serde_json::Value>) -> Result<Vec<TraceRecord>, String>;   // None binding -> Err("run has no bound Pi session")
+    pub fn traces_for_binding(binding: Option<&serde_json::Value>) -> Result<Vec<TraceRecord>, String>;   // None binding, or one without piSessionId -> Err("run has no bound Pi session")
 Tests: parse_list with good, malformed, and null-field lines; exact match ordered first; subagent path matches; the
 substring false-positive case (session id "01a1da96-b866" must not match a path component "01a1da96-b866-7737-…");
-binding missing a field; empty result.
+binding without piSessionFile (still matches by path component); binding without piSessionId (None); empty result.
 """ + RULES,
     },
     {
@@ -198,13 +226,14 @@ Write `external_launch.rs`: run another full-screen program from inside the piw 
 traces modal (`o`) and for editing a run's workflow source (`e`).
 
 Verified facts:
-- The `traces <trace-id>` program (e.g. `traces pi:9b1c2db1f2b9595e22b795d0`) opens a full-screen modal on stderr and
-  reads keys from the terminal. Started while the parent still owns the terminal (raw mode, alternate screen, mouse
+- The `traces <trace-id>` program (e.g. `traces pi:9b1c2db1f2b9595e22b795d0`) opens a full-screen modal and
+  reads keys from the terminal (it accepts grok-traces ids like the one above). Started while the parent still owns the terminal (raw mode, alternate screen, mouse
   capture on) it EXITS IMMEDIATELY with status 0. It works only after the parent has fully released the terminal.
-- piw sets up with `ratatui::init()` (raw mode + alternate screen) and `crossterm::execute!(stdout, EnableMouseCapture)`;
-  it tears down with `DisableMouseCapture` then `ratatui::restore()`. Your suspend/restore must mirror that exactly.
+- piw sets up with `ratatui::init()` (raw mode + alternate screen + a panic hook) and
+  `crossterm::execute!(stdout, EnableMouseCapture)`; it tears down with `DisableMouseCapture` then `ratatui::restore()`.
+  Do NOT call `ratatui::init()` again to resume: every call stacks another panic hook. Suspend and resume with crossterm
+  directly and keep the same terminal value.
 - The event loop owns the terminal, so the launch is performed by the loop; key handling only records a request.
-- Do NOT implement `grok-traces follow` (it can only be left with Ctrl-C, which would also kill piw).
 
 Public surface:
     #[derive(Debug, Clone, PartialEq)] pub enum ExternalAction { Traces { trace_id: String }, Edit { path: String } }
@@ -212,9 +241,9 @@ Public surface:
     pub fn build_command(action: &ExternalAction, visual: Option<&str>, editor: Option<&str>) -> std::process::Command;   // Traces -> `traces <id>`; Edit -> editor argv + path
     pub fn program_name(action: &ExternalAction, visual: Option<&str>, editor: Option<&str>) -> String;   // for the "not on PATH" notice
     pub fn run_external(terminal: &mut ratatui::DefaultTerminal, command: &mut std::process::Command) -> std::io::Result<std::process::ExitStatus>;
-        // disable mouse capture, ratatui::restore(), spawn with inherited stdio and wait, then
-        // ratatui::init() again, re-enable mouse capture, and terminal.clear(). Restore the terminal even when spawn
-        // fails or wait fails; return the original error afterwards. Replace *terminal with the re-initialised one.
+        // suspend: execute!(stdout, DisableMouseCapture, LeaveAlternateScreen), then disable_raw_mode(); spawn with
+        // inherited stdio and wait; resume: enable_raw_mode(), execute!(stdout, EnterAlternateScreen, EnableMouseCapture),
+        // then terminal.clear(). Resume even when spawn or wait fails, and return the original error afterwards.
     pub fn failure_notice(error: &std::io::Error, program: &str) -> String;   // NotFound -> "<program> is not on PATH"; otherwise "<program> failed: <error>"
 Tests: editor_argv precedence/blank/whitespace cases, build_command argv for both actions (inspect with
 `command.get_program()`/`get_args()`), failure_notice for NotFound and another kind. run_external itself needs a
@@ -231,8 +260,8 @@ the keyboard. Model it on `theme_picker.rs` (same popup, list, footer style). A 
 run matched 5): the first is the run's own session, the rest are subagent sessions. Keys inside the overlay: Up/`k`,
 Down/`j`, Enter picks, Esc closes.
 
-The trace type is defined by another module; use exactly this definition (do not redefine it, import
-`crate::trace_match::TraceRecord`):
+The trace type lives in another module. Import it with `use crate::trace_match::TraceRecord;` and do NOT define a
+struct of that name in your file. It is shown here only so you know its fields:
 """ + TRACE_RECORD + """
 Public surface:
     pub struct TracePicker { pub records: Vec<TraceRecord>, pub selected: usize }
@@ -261,7 +290,8 @@ source of truth. Attached: `handle_key.rs.txt` (the real key handler), `interact
 `footer.rs.txt` (today's footer hint line).
 
 Content:
-- Read the existing bindings from handle_key.rs.txt (it wins over the docs). If the docs and the code disagree on
+- Read the existing bindings from handle_key.rs.txt (it wins over the docs). It ends with `handle_theme_picker_key`,
+  the keys that apply while the theme picker is open. If the docs and the code disagree on
   anything, list the disagreement as `// DISAGREEMENT: ...` comments at the top of the file.
 - Add the NEW bindings (wired later by hand), exactly these:
     `/` filter runs (type to narrow; space = AND)      `a` toggle active-only runs
@@ -281,10 +311,12 @@ Public surface:
     pub enum HelpOutcome { Continue, Close }
     pub fn lines(width: usize) -> Vec<String>;      // the table laid out as plain lines with group headings, wrapped/truncated to width
     pub fn render(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, state: &HelpState, palette: &crate::theme::Palette);
-    pub const FOOTER_HINT: &str;                    // the new full hint, e.g. " … f: follow  z: density  ,: theme  ?: help  q: quit"
-Footer: `footer.rs.txt` shows the current hint strings. Put in FOOTER_HINT the version of the single-run/normal hint that
-adds `?: help` and keeps the rest; then in a `// WIRING:` comment give the exact old line and the exact new line to
-paste, and say whether the result still fits 80 columns.
+    pub const FOOTER_KEYS: &str = "f: follow  z: density  ,: theme  ?: help  q: quit";    // exactly this text
+    pub const FOOTER_KEYS_EMPTY: &str = " ,: theme  Tab: focus  ?: help  q: quit";          // exactly this text
+Footer: `footer.rs.txt` shows the two current hint lines. The normal one is built at run time as
+`format!(" {}x  f: follow  z: density  ,: theme  q: quit", view.speed)`, so a const cannot hold all of it: FOOTER_KEYS is
+the part after the speed. In a `// WIRING:` comment give, for each of the two hints, the exact old line and the exact
+new line to paste.
 Tests: no duplicate (group, keys) pair; every NEW key above is present in BINDINGS; every group in the order above has
 at least one row; `lines()` never exceeds the width, even for width 20; scrolling clamps at both ends; `?`/Esc/q close.
 """ + RULES,
@@ -301,7 +333,8 @@ and calls `render` last, over the footer line. `footer.rs.txt` shows the footer 
 Public surface:
     pub struct Notice { pub text: String, pub level: Level, pub raised: std::time::Instant }
     #[derive(Debug, Clone, Copy, PartialEq, Eq)] pub enum Level { Info, Warn, Error }
-    pub const TTL: std::time::Duration;                                   // 4 s; Error lives 8 s
+    pub const TTL: std::time::Duration;                                   // 4 s, for Info and Warn
+    pub const ERROR_TTL: std::time::Duration;                             // 8 s, for Error
     impl Notice {
         pub fn info(text: impl Into<String>) -> Self;  pub fn warn(text: impl Into<String>) -> Self;  pub fn error(text: impl Into<String>) -> Self;
         pub fn expired_at(&self, now: std::time::Instant) -> bool;        // pure, so tests need no sleeping
@@ -309,7 +342,7 @@ Public surface:
     pub fn current(notice: &Option<Notice>, now: std::time::Instant) -> Option<&Notice>;   // None once expired
     pub fn render(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, notice: &Notice, palette: &crate::theme::Palette);
         // draws on the LAST row of `area`, left-aligned, text run through crate::format::sanitize_text, truncated with
-        // "…" to the width (unicode-width), Info=palette.success, Warn=palette.warning, Error=palette.error, on palette.panel_bg
+        // "…" to the width (unicode-width), Info=palette.success, Warn=palette.warning, Error=palette.error, on palette.app_bg (the footer's background)
     pub fn truncate_to_width(text: &str, width: usize) -> String;        // width-safe for wide chars; width 0 -> ""
 Tests: expiry boundaries for each level using constructed Instants (Instant::now() + offsets), `current` returns None
 after expiry, truncate_to_width with ASCII, CJK, an emoji, and width 0/1.
@@ -321,7 +354,7 @@ after expiry, truncate_to_width with ASCII, CJK, an emoji, and width 0/1.
         "context_files": [f"{CTX}/interfaces.rs.txt"],
         "prompt": """
 Write `clipboard.rs`: copy text to the user's clipboard from inside a terminal program using the OSC 52 escape
-sequence (works over SSH and in piw's remote mode, needs no external tool). Used by `y` to copy the selected run id.
+sequence (needs no external tool; verified working in the user's terminal, Rex). Used by `y` to copy the selected run id.
 `base64` 0.22 is already a dependency (use `base64::engine::general_purpose::STANDARD` and `Engine`).
 
 Facts: the sequence is ESC ] 52 ; c ; <base64 of the text> BEL. No multiplexer handling. Cap the payload at 100_000 bytes of input text and refuse bigger input.
@@ -537,10 +570,9 @@ def run_pipeline(api_key: str, endpoint: str, model: str, repo_root: Path, outpu
     print(f"\n[🎉] Complete! {success_count}/{len(tasks)} files generated in {total_time:.1f}s!")
 
 def main():
-    default_key, default_endpoint = resolve_api_config()
     parser = argparse.ArgumentParser(description="Parallel AI Code Generator with Context Injection")
-    parser.add_argument("--key", default=default_key, help="API key (CHEAPERINFERENCE_API_KEY or OPENROUTER_API_KEY)")
-    parser.add_argument("--endpoint", default=default_endpoint, help="Completions endpoint")
+    parser.add_argument("--key", default=None, help="API key (CHEAPERINFERENCE_API_KEY or OPENROUTER_API_KEY)")
+    parser.add_argument("--endpoint", default=None, help="Completions endpoint")
     parser.add_argument("--model", default=MODEL, help=f"Model identifier (default: {MODEL})")
     parser.add_argument("--repo", default=str(HERE.parent), help="Repository root for context files (default: the repo holding this script)")
     parser.add_argument("--output", default=str(HERE / "piw-tui_out"), help="Base output directory")
@@ -548,7 +580,7 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="Show prompt sizes and cost estimate, call nothing")
     args = parser.parse_args()
 
-    key, endpoint = resolve_api_config(args.key, args.endpoint)
+    key, endpoint = (None, None) if args.dry_run else resolve_api_config(args.key, args.endpoint)
     if not key and not args.dry_run:
         print("Error: API key required via --key, CHEAPERINFERENCE_API_KEY, or OPENROUTER_API_KEY.", file=sys.stderr)
         sys.exit(1)

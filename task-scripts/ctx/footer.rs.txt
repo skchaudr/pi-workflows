@@ -65,3 +65,16 @@ fn render_compact(frame: &mut Frame, area: Rect, view: &TimelineView<'_>, palett
         .style(Style::default().bg(palette.app_bg)),
         area,
     );
+
+// tui/src/ui/timeline.rs empty-state hint, shown when no run is selected (60-70), verbatim
+    let Some(view) = view else {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                " ,: theme  Tab: focus  q: quit",
+                Style::default().fg(palette.muted),
+            )))
+            .style(Style::default().bg(palette.app_bg)),
+            area,
+        );
+        return TimelineGeometry::default();
+    };
