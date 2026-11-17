@@ -379,8 +379,8 @@ Tests: exact sequence for a known string (compute the base64 of "hello" by hand:
         "prompt": """
 Write `graph_nav.rs`: keyboard movement between the nodes of the workflow graph. Today the graph pane can only be
 panned with the keyboard; choosing a node needs a mouse click. This module is pure geometry: it answers "which node is
-next" and "how must the camera move to show it". The wiring already has `select_graph_node(&node_id)`, which selects
-the node and shows its details in the inspector, so you only return node ids and camera offsets.
+next" and "how must the camera move to show it". The hand wiring keeps the focused node id and shows
+its details, so you only return node ids and camera offsets.
 
 The viewer keeps the on-canvas rectangle of every drawn node. Import this existing type with
 `use crate::render::NodeBounds;` and do NOT define it; it is shown so you know its fields:
@@ -426,7 +426,8 @@ already offers an equivalent. Output a markdown document with:
    timeline track/buttons, graph node clicks, graph drag-pan, sidebar border drag-resize, inspector border drag-resize,
    inspector tab clicks, run-list clicks and scroll, theme-picker clicks, wheel scrolling, ...).
 2. For each gap, a proposal: the key, why it is free, what it does. Keys already taken are in handle_key.rs.txt; also
-   reserved for other work and NOT available: `/` `a` `p` `x` `o` `e` `y` `?`.
+   reserved for other work and NOT available: `/` `a` `p` `x` `o` `e` `y` `?` `n` `N`, and in the Graph pane Enter,
+   plain arrows and `hjkl` (move between nodes) and Shift+arrows (pan).
 3. A short "needs a design decision" list for gaps where no obvious key exists (say why).
 4. Any place where the docs in interaction.md disagree with the code in handle_key.rs.txt, quoted.
 Be specific: quote the match arm or condition you based each row on. Do not invent handler behaviour that is not in the
@@ -491,7 +492,7 @@ def extract_code_from_markdown(content: str) -> str:
     return content.strip()
 
 def resolve_api_config(cli_key=None, cli_endpoint=None):
-    key = cli_key or os.environ.get("CHEAPERINFERENCE_API_KEY") or os.environ.get("CHEAPER_INFERENCE_API_KEY")
+    key = cli_key or os.environ.get("OPENROUTER_API_KEY") or os.environ.get("CHEAPERINFERENCE_API_KEY") or os.environ.get("CHEAPER_INFERENCE_API_KEY")
     if not key and sys.platform == "darwin":
         for svc in ("cheaper-inference-skchadur-2-api-key", "cheaper-inference-api-key"):
             try:
@@ -500,8 +501,6 @@ def resolve_api_config(cli_key=None, cli_endpoint=None):
                 key = out.decode().strip()
                 if key: break
             except Exception: pass
-    if key and not cli_endpoint:
-        return key, CHEAPER_ENDPOINT
     key = key or os.environ.get("OPENROUTER_API_KEY")
     endpoint = cli_endpoint or (CHEAPER_ENDPOINT if key and key.startswith("ci_") else OPENROUTER_ENDPOINT)
     return key, endpoint
@@ -576,6 +575,8 @@ def execute_single_task(api_key: str, endpoint: str, model: str, task: TaskSpec,
         if str(finish).lower() in ("length", "max_tokens"):
             return {"task": task, "success": False, "error": f"TRUNCATED at max_tokens={MAX_TOKENS}; partial return kept in {returns}"}
         clean_code = raw_content.strip() if task.get("raw") else extract_code_from_markdown(raw_content)
+        if not clean_code:
+            return {"task": task, "success": False, "error": f"EMPTY response; raw return in {returns}"}
 
         target_path = output_base / task["output_file"]
         target_path.parent.mkdir(parents=True, exist_ok=True)
