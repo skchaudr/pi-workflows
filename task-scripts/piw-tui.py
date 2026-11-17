@@ -16,7 +16,7 @@ Copy the .rs files into tui/src/ui/ yourself once reviewed.
 
 MODEL = "google/gemini-4-argon"  # OpenRouter id; cheaper: google/gemini-3.7-flash ($0.75/$3.75 per M). Override with --model
 CTX = "task-scripts/ctx"
-MAX_TOKENS = 16000  # per slice; a return cut off at this is marked failed, not written
+MAX_TOKENS = 32000  # per slice; a return cut off at this is marked failed, not written
 
 # Types two slices must agree on. Defined once here and pasted into both prompts.
 TRACE_RECORD = """
@@ -34,7 +34,8 @@ RULES = """
 Hard rules: Rust 2021, ratatui 0.30, crossterm 0.29, serde_json. No new crates, no `unsafe`, no `unwrap()` or
 `expect()` on anything that comes from I/O, the server, or the user. The file must compile at its output path inside the
 existing crate (use `crate::` paths; from a file in `tui/src/ui/` the type `RunSummary` is `super::RunSummary`; do not
-redefine types the interfaces file lists). Derive `Debug, Clone, PartialEq` on every public enum and plain-data struct you define.
+redefine types the interfaces file lists; a `// ---- tui/src/a/b.rs` header there means its items live at `crate::a::b::`,
+and `mod.rs` names the folder: `tui/src/theme/mod.rs` is `crate::theme::`). Derive `Debug, Clone, PartialEq` on every public enum and plain-data struct you define.
 Put unit tests in a `#[cfg(test)] mod tests` at the bottom; they must not need a terminal, network, or files.
 Return the complete file in ONE ```rust block and nothing else: no prose before or after.
 """
@@ -172,6 +173,8 @@ Public surface:
         pub fn complete(&mut self, request_id: &str, outcome: CommandOutcome) -> Option<(ClientRequest, CommandOutcome)>;   // removes the tracked request and returns it with its outcome; None if unknown
         pub fn is_pending(&self, run_id: &str) -> bool;
     }
+`ClientRequest` and `ServerResponse` derive only Debug and Clone (no PartialEq): do not derive PartialEq on a type that
+holds one, and compare their fields in tests, never the structs.
 Tests: build_command gives a requestId different from its key, and two calls share neither; two CommandIds with
 different nonces never collide; retry keeps the key and changes the requestId; from_response for an accepted response
 and for a rejected one with an error; tracker: take_unsent returns a request once and nothing on the second call; after
