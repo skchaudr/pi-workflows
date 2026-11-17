@@ -1201,7 +1201,12 @@ impl App {
                 _ => None,
             });
         match path {
-            Some(path) => self.external = Some(external_launch::ExternalAction::Edit { path }),
+            Some(path) if std::path::Path::new(&path).is_file() => {
+                self.external = Some(external_launch::ExternalAction::Edit { path })
+            }
+            Some(path) => {
+                self.notice = Some(Notice::warn(format!("workflow source is gone: {path}")))
+            }
             None => self.notice = Some(Notice::warn("run has no workflow source file")),
         }
     }
