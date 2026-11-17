@@ -3,52 +3,49 @@
 //! transport. Works against a local runs directory, a single run, or a
 //! `piw serve` WebSocket server; all three feed the same view model.
 
-#[allow(dead_code)] // until wired into handle_key
 mod clipboard;
 mod controls;
 mod conversation;
-#[allow(dead_code)] // until wired into handle_key
 mod external_launch;
 mod graph;
-#[allow(dead_code)] // until wired into handle_key
 mod graph_nav;
-#[allow(dead_code)] // until wired into handle_key
 mod help;
-#[allow(dead_code)] // until wired into handle_key
 mod notice;
-#[allow(dead_code)] // until wired into handle_key
 mod run_command;
-#[allow(dead_code)] // until wired into handle_key
 mod run_filter;
 mod theme_picker;
 mod timeline;
-#[allow(dead_code)] // until wired into handle_key
 mod trace_picker;
 
 use crate::client::RemoteRuns;
+use crate::client_commands::CommandOutcome;
 use crate::format::{format_duration, parse_timestamp_ms, sanitize_text};
 use crate::layout::GraphLayout;
-use crate::protocol::PageKind;
+use crate::protocol::{ClientRequest, PageKind};
 use crate::render::{
     render_graph, render_graph_with_layout, GraphNodeStyle, GraphView, NodeBounds, RenderedGraph,
 };
 use crate::session::{assess_capture, CaptureIntegrity};
 use crate::state::types::{
     DefinitionSnapshot, EdgeDef, NodeOutcome, RunState, RunStatus, SessionCapture,
-    SessionEntryRecord, SessionEventRecord, StepRecord, WorkflowDisplay, SESSION_BINDING_SCHEMA,
+    SessionEntryRecord, SessionEventRecord, StepRecord, WorkflowDisplay, WorkflowSource,
+    SESSION_BINDING_SCHEMA,
 };
 use crate::theme::{self, Palette, ThemeConfig};
+use crate::trace_match;
 use anyhow::Result;
 use crossterm::event::{
     DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
     MouseButton, MouseEvent, MouseEventKind,
 };
+use notice::Notice;
 use ratatui::backend::TestBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style, Stylize as _};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::{Frame, Terminal};
+use run_command::RunOp;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -266,6 +263,26 @@ impl Provider {
             remote.request_artifact(run_id, path);
         }
     }
+
+    fn session_binding(&mut self, run_id: &str) -> Option<Value> {
+        let Provider::Remote(remote) = self;
+        remote.view(run_id)?.session_binding.clone()
+    }
+
+    fn send_command(&self, operation: &str, run_id: &str) {
+        let Provider::Remote(remote) = self;
+        remote.send_command(operation, run_id);
+    }
+
+    fn command_pending(&self, run_id: &str) -> bool {
+        let Provider::Remote(remote) = self;
+        remote.command_pending(run_id)
+    }
+
+    fn take_command_results(&self) -> Vec<(ClientRequest, CommandOutcome)> {
+        let Provider::Remote(remote) = self;
+        remote.take_command_results()
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -414,6 +431,8 @@ struct App {
     /// provide the padding needed to truly center edge nodes and small graphs.
     graph_offset: (i64, i64),
     graph_nodes: Vec<NodeBounds>,
+    /// Keyboard focus in the graph pane; may be a node that has not run yet.
+    focused_node: Option<String>,
     graph_cache: Option<GraphCache>,
     dragging: Option<DragTarget>,
     tab: InspectorTab,
@@ -431,6 +450,13 @@ struct App {
     theme_config_path: std::path::PathBuf,
     theme_picker: Option<theme_picker::ThemePicker>,
     theme_diagnostic: Option<String>,
+    run_filter: run_filter::RunFilter,
+    help: Option<help::HelpState>,
+    trace_picker: Option<trace_picker::TracePicker>,
+    cancel_confirm: Option<run_command::CancelConfirm>,
+    notice: Option<Notice>,
+    /// Program to run in the foreground once the current key is handled.
+    external: Option<external_launch::ExternalAction>,
     /// Pane rectangles from the last draw, for mouse routing.
     frame_rect: Rect,
     main_rect: Rect,
@@ -533,13 +559,15 @@ fn event_loop(
 
     while !app.quit {
         app.provider.tick();
+        app.take_command_results();
         let summaries = app.provider.summaries();
-        let selected_available = summaries
+        let visible = run_filter::visible(&summaries, &app.run_filter);
+        let selected_available = visible
             .iter()
             .any(|summary| Some(&summary.run_id) == app.selected_run.as_ref());
         app.selected_run = reconcile_selected_run(
             app.selected_run.take(),
-            summaries.first().map(|summary| summary.run_id.as_str()),
+            visible.first().map(|summary| summary.run_id.as_str()),
             selected_available,
             app.show_sidebar,
         );
@@ -555,6 +583,9 @@ fn event_loop(
             match crossterm::event::read()? {
                 Event::Key(key) if key.kind != KeyEventKind::Release => {
                     handle_key(&mut app, &summaries, key);
+                    if let Some(action) = app.external.take() {
+                        app.launch_external(terminal, &action);
+                    }
                 }
                 Event::Mouse(mouse) => handle_mouse(&mut app, &summaries, mouse),
                 _ => {}
@@ -598,6 +629,7 @@ fn create_app(
         follow: true,
         graph_offset: (0, 0),
         graph_nodes: Vec::new(),
+        focused_node: None,
         graph_cache: None,
         dragging: None,
         tab: InspectorTab::Steps,
@@ -615,6 +647,12 @@ fn create_app(
         theme_config_path: resolved_theme.config_path,
         theme_picker: None,
         theme_diagnostic: resolved_theme.diagnostics.into_iter().next(),
+        run_filter: run_filter::RunFilter::new(),
+        help: None,
+        trace_picker: None,
+        cancel_confirm: None,
+        notice: None,
+        external: None,
         frame_rect: Rect::default(),
         main_rect: Rect::default(),
         runs_rect: Rect::default(),
@@ -1049,16 +1087,175 @@ impl App {
         }
     }
 
+    /// Move the selection within the runs the filter shows.
     fn select_run(&mut self, summaries: &[RunSummary], delta: i64) {
-        if summaries.is_empty() {
+        let runs = run_filter::visible(summaries, &self.run_filter);
+        if runs.is_empty() {
             return;
         }
-        let current = summaries
+        let current = runs
             .iter()
             .position(|summary| Some(&summary.run_id) == self.selected_run.as_ref())
             .unwrap_or(0) as i64;
-        let next = (current + delta).clamp(0, summaries.len() as i64 - 1) as usize;
-        self.select_run_id(summaries[next].run_id.clone());
+        let next = (current + delta).clamp(0, runs.len() as i64 - 1) as usize;
+        self.select_run_id(runs[next].run_id.clone());
+    }
+
+    /// Keep the selection on a run the filter still shows.
+    fn reconcile_filtered_selection(&mut self, summaries: &[RunSummary]) {
+        let runs = run_filter::visible(summaries, &self.run_filter);
+        if let Some(run_id) = run_filter::reconcile_selection(&runs, self.selected_run.as_deref()) {
+            self.select_run_id(run_id);
+        }
+    }
+
+    fn selected_summary<'a>(&self, summaries: &'a [RunSummary]) -> Option<&'a RunSummary> {
+        summaries
+            .iter()
+            .find(|summary| Some(&summary.run_id) == self.selected_run.as_ref())
+    }
+
+    fn toggle_selected_run(&mut self, summaries: &[RunSummary]) {
+        let Some(run) = self.selected_summary(summaries) else {
+            return;
+        };
+        match run_command::toggle_op(&run.display.controls) {
+            Some(op) => self.send_run_command(op, &run.run_id),
+            None => {
+                self.notice = Some(Notice::warn(run_command::no_control_notice(
+                    run.display.status.label(),
+                    &run.display.controls,
+                )));
+            }
+        }
+    }
+
+    fn begin_cancel(&mut self, summaries: &[RunSummary]) {
+        let Some(run) = self.selected_summary(summaries) else {
+            return;
+        };
+        self.cancel_confirm = run_command::CancelConfirm::begin(
+            &run.display.controls,
+            &run.run_id,
+            &run.workflow_name,
+        );
+        if self.cancel_confirm.is_none() {
+            self.notice = Some(Notice::warn(format!(
+                "cannot cancel ({})",
+                run.display.status.label()
+            )));
+        }
+    }
+
+    fn send_run_command(&mut self, op: RunOp, run_id: &str) {
+        if !self.provider.command_pending(run_id) {
+            self.provider.send_command(op.operation(), run_id);
+        }
+        self.notice = Some(Notice::info(op.busy()));
+    }
+
+    fn take_command_results(&mut self) {
+        for (request, outcome) in self.provider.take_command_results() {
+            let Some(op) = [RunOp::Pause, RunOp::Resume, RunOp::Cancel]
+                .into_iter()
+                .find(|op| op.operation() == request.operation)
+            else {
+                continue;
+            };
+            let text = run_command::outcome_notice(op, &outcome.outcome, outcome.error.as_deref());
+            self.notice = Some(if outcome.is_success() {
+                Notice::info(text)
+            } else {
+                Notice::error(text)
+            });
+        }
+    }
+
+    fn open_traces(&mut self) {
+        let Some(run_id) = self.selected_run.clone() else {
+            return;
+        };
+        let binding = self.provider.session_binding(&run_id);
+        match trace_match::traces_for_binding(binding.as_ref()) {
+            Err(error) => self.notice = Some(Notice::error(error)),
+            Ok(mut records) if records.len() == 1 => {
+                let trace_id = records.remove(0).id;
+                self.external = Some(external_launch::ExternalAction::Traces { trace_id });
+            }
+            Ok(records) if records.is_empty() => {
+                self.notice = Some(Notice::warn("no traces match this run's Pi session"));
+            }
+            Ok(records) => self.trace_picker = Some(trace_picker::TracePicker::new(records)),
+        }
+    }
+
+    fn edit_source(&mut self) {
+        let Some(run_id) = self.selected_run.clone() else {
+            return;
+        };
+        let path = self
+            .provider
+            .data(&run_id)
+            .and_then(|data| match &data.state.workflow_source {
+                Some(WorkflowSource::File { path, .. }) => Some(path.clone()),
+                _ => None,
+            });
+        match path {
+            Some(path) => self.external = Some(external_launch::ExternalAction::Edit { path }),
+            None => self.notice = Some(Notice::warn("run has no workflow source file")),
+        }
+    }
+
+    fn launch_external(
+        &mut self,
+        terminal: &mut ratatui::DefaultTerminal,
+        action: &external_launch::ExternalAction,
+    ) {
+        let visual = std::env::var("VISUAL").ok();
+        let editor = std::env::var("EDITOR").ok();
+        let mut command =
+            external_launch::build_command(action, visual.as_deref(), editor.as_deref());
+        let program = external_launch::program_name(action, visual.as_deref(), editor.as_deref());
+        match external_launch::run_external(terminal, &mut command) {
+            Ok(status) if status.success() => {}
+            Ok(status) => {
+                self.notice = Some(Notice::warn(format!("{program} exited with {status}")));
+            }
+            Err(error) => {
+                self.notice = Some(Notice::error(external_launch::failure_notice(
+                    &error, &program,
+                )));
+            }
+        }
+    }
+
+    fn copy_run_id(&mut self) {
+        let Some(run_id) = self.selected_run.clone() else {
+            return;
+        };
+        self.notice = Some(match clipboard::copy(&run_id) {
+            Ok(()) => Notice::info(clipboard::copied_notice(&run_id)),
+            Err(error) => Notice::error(error),
+        });
+    }
+
+    /// Move keyboard focus to a graph node, scroll it into view, and show it
+    /// in the Inspector when it has run.
+    fn focus_graph_node(&mut self, node_id: Option<String>) {
+        let Some(node_id) = node_id else {
+            return;
+        };
+        if let Some(node) = self.graph_nodes.iter().find(|node| node.node_id == node_id) {
+            let viewport = (
+                self.graph_rect.width.saturating_sub(2) as usize,
+                self.graph_rect.height.saturating_sub(2) as usize,
+            );
+            self.graph_offset = graph_nav::reveal_offset(node, self.graph_offset, viewport, 1);
+        }
+        self.select_graph_node(&node_id);
+        // select_graph_node turns follow on; follow would recentre every frame.
+        self.follow = false;
+        self.focused_node = Some(node_id);
     }
 
     fn select_run_id(&mut self, run_id: String) {
@@ -1079,6 +1276,7 @@ impl App {
         self.conversation_payload_expanded = false;
         self.graph_offset = (0, 0);
         self.follow = true;
+        self.focused_node = None;
     }
 
     fn resize_sidebar(&mut self, divider_column: u16) {
@@ -1179,9 +1377,59 @@ fn handle_key(app: &mut App, summaries: &[RunSummary], key: KeyEvent) {
         handle_theme_picker_key(app, key);
         return;
     }
+    if let Some(state) = app.help.as_mut() {
+        let popup = help::popup_rect(app.frame_rect);
+        let total_rows = help::lines(popup.width.saturating_sub(2) as usize).len();
+        let visible_rows = popup.height.saturating_sub(2) as usize;
+        if state.handle_key(key, visible_rows, total_rows) == help::HelpOutcome::Close {
+            app.help = None;
+        }
+        return;
+    }
+    if let Some(picker) = app.trace_picker.as_mut() {
+        match picker.handle_key(key) {
+            trace_picker::PickerOutcome::Pick(trace_id) => {
+                app.trace_picker = None;
+                app.external = Some(external_launch::ExternalAction::Traces { trace_id });
+            }
+            trace_picker::PickerOutcome::Close => app.trace_picker = None,
+            trace_picker::PickerOutcome::Continue => {}
+        }
+        return;
+    }
+    if let Some(confirm) = app.cancel_confirm.take() {
+        if confirm.handle_key(key) == run_command::ConfirmOutcome::Send {
+            app.send_run_command(RunOp::Cancel, &confirm.run_id);
+        }
+        return;
+    }
+    if app.run_filter.editing {
+        match app.run_filter.handle_key(key) {
+            run_filter::FilterOutcome::Ignored => {}
+            run_filter::FilterOutcome::Kept => return,
+            run_filter::FilterOutcome::Edited | run_filter::FilterOutcome::Cleared => {
+                app.reconcile_filtered_selection(summaries);
+                return;
+            }
+        }
+    }
     match key.code {
         KeyCode::Char('q') => app.quit = true,
         KeyCode::Char(',') => app.open_theme_picker(),
+        KeyCode::Char('?') => app.help = Some(help::HelpState::new()),
+        KeyCode::Char('/') if app.show_sidebar => {
+            app.run_filter.open();
+            app.focus = Focus::Runs;
+        }
+        KeyCode::Char('a') if app.show_sidebar => {
+            app.run_filter.toggle_active();
+            app.reconcile_filtered_selection(summaries);
+        }
+        KeyCode::Char('p') => app.toggle_selected_run(summaries),
+        KeyCode::Char('x') => app.begin_cancel(summaries),
+        KeyCode::Char('o') => app.open_traces(),
+        KeyCode::Char('e') => app.edit_source(),
+        KeyCode::Char('y') => app.copy_run_id(),
         KeyCode::Char('b') if app.show_sidebar => {
             app.sidebar_collapsed = !app.sidebar_collapsed;
             app.sidebar_explicit = true;
@@ -1222,23 +1470,51 @@ fn handle_key(app: &mut App, summaries: &[RunSummary], key: KeyEvent) {
             },
             Focus::Graph => {
                 let (x, y) = app.graph_offset;
+                let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+                let direction = match key.code {
+                    KeyCode::Up | KeyCode::Char('k') => Some(graph_nav::Direction::Up),
+                    KeyCode::Down | KeyCode::Char('j') => Some(graph_nav::Direction::Down),
+                    KeyCode::Left | KeyCode::Char('h') => Some(graph_nav::Direction::Left),
+                    KeyCode::Right | KeyCode::Char('l') => Some(graph_nav::Direction::Right),
+                    _ => None,
+                };
                 match key.code {
-                    KeyCode::Up | KeyCode::Char('k') => {
+                    KeyCode::Up if shift => {
                         app.graph_offset = (x, y - 2);
                         app.follow = false;
                     }
-                    KeyCode::Down | KeyCode::Char('j') => {
+                    KeyCode::Down if shift => {
                         app.graph_offset = (x, y + 2);
                         app.follow = false;
                     }
-                    KeyCode::Left | KeyCode::Char('h') => {
+                    KeyCode::Left if shift => {
                         app.graph_offset = (x - 4, y);
                         app.follow = false;
                     }
-                    KeyCode::Right | KeyCode::Char('l') => {
+                    KeyCode::Right if shift => {
                         app.graph_offset = (x + 4, y);
                         app.follow = false;
                     }
+                    _ if direction.is_some() => {
+                        let next = direction.and_then(|direction| {
+                            graph_nav::neighbour(
+                                &app.graph_nodes,
+                                app.focused_node.as_deref(),
+                                direction,
+                            )
+                        });
+                        app.focus_graph_node(next);
+                    }
+                    KeyCode::Char('n') | KeyCode::Char('N') => {
+                        let forward = key.code == KeyCode::Char('n');
+                        let next = graph_nav::cycle(
+                            &app.graph_nodes,
+                            app.focused_node.as_deref(),
+                            forward,
+                        );
+                        app.focus_graph_node(next);
+                    }
+                    KeyCode::Enter => app.focus = Focus::Inspector,
                     KeyCode::Char('0') => {
                         app.graph_offset = (0, 0);
                         app.follow = true;
@@ -1432,6 +1708,9 @@ fn handle_mouse(app: &mut App, summaries: &[RunSummary], mouse: MouseEvent) {
         handle_theme_picker_mouse(app, mouse);
         return;
     }
+    if app.help.is_some() || app.trace_picker.is_some() || app.cancel_confirm.is_some() {
+        return;
+    }
     if app.dragging.is_none()
         && matches!(
             mouse.kind,
@@ -1522,8 +1801,9 @@ fn handle_mouse(app: &mut App, summaries: &[RunSummary], mouse: MouseEvent) {
                 // Row 0 of the pane is the border/title.
                 let row = mouse.row.saturating_sub(app.runs_rect.y + 1) as usize;
                 let index = app.runs_scroll + row;
-                if index < summaries.len() {
-                    app.select_run_id(summaries[index].run_id.clone());
+                let runs = run_filter::visible(summaries, &app.run_filter);
+                if let Some(run) = runs.get(index) {
+                    app.select_run_id(run.run_id.clone());
                 }
             } else if contains(app.inspector_rect, mouse.column, mouse.row) {
                 app.focus = Focus::Inspector;
@@ -1571,6 +1851,7 @@ fn handle_mouse(app: &mut App, summaries: &[RunSummary], mouse: MouseEvent) {
                         .map(|node| node.node_id.clone());
                     if let Some(node_id) = node_id {
                         app.select_graph_node(&node_id);
+                        app.focused_node = Some(node_id);
                     }
                 }
             }
@@ -1755,9 +2036,7 @@ fn draw(frame: &mut Frame, app: &mut App, summaries: &[RunSummary]) {
             },
             &palette,
         );
-        if let Some(picker) = &app.theme_picker {
-            theme_picker::render(frame, area, picker, &palette);
-        }
+        draw_overlays(frame, app, area, transport, &palette);
         return;
     };
     let replay = app.replay;
@@ -1818,9 +2097,7 @@ fn draw(frame: &mut Frame, app: &mut App, summaries: &[RunSummary]) {
             },
             &palette,
         );
-        if let Some(picker) = &app.theme_picker {
-            theme_picker::render(frame, area, picker, &palette);
-        }
+        draw_overlays(frame, app, area, transport, &palette);
         return;
     };
 
@@ -1991,6 +2268,28 @@ fn draw(frame: &mut Frame, app: &mut App, summaries: &[RunSummary]) {
             .block(graph_block),
         graph_rect,
     );
+    let focused_bounds = app
+        .focused_node
+        .as_ref()
+        .filter(|_| focus == Focus::Graph)
+        .and_then(|node_id| app.graph_nodes.iter().find(|node| &node.node_id == node_id));
+    if let Some(node) = focused_bounds {
+        let left = (node.x - offset.0).max(0);
+        let top = (node.y - offset.1).max(0);
+        let right = (node.x + node.width - offset.0).min(inner_width as i64);
+        let bottom = (node.y + node.height - offset.1).min(inner_height as i64);
+        if left < right && top < bottom {
+            let highlight = Rect::new(
+                graph_rect.x + 1 + left as u16,
+                graph_rect.y + 1 + top as u16,
+                (right - left) as u16,
+                (bottom - top) as u16,
+            );
+            frame
+                .buffer_mut()
+                .set_style(highlight, Style::default().bg(palette.selection_bg));
+        }
+    }
 
     // Inspector pane. Tabs get their own control row so their complete visual
     // labels are also their complete mouse targets.
@@ -2116,8 +2415,42 @@ fn draw(frame: &mut Frame, app: &mut App, summaries: &[RunSummary]) {
         },
         &palette,
     );
+    draw_overlays(frame, app, area, transport, &palette);
+}
+
+/// Footer-line prompts and popups, drawn last so they sit above the panes.
+fn draw_overlays(frame: &mut Frame, app: &App, area: Rect, transport: Rect, palette: &Palette) {
+    let footer = Rect::new(
+        transport.x,
+        transport.bottom().saturating_sub(1),
+        transport.width,
+        transport.height.min(1),
+    );
+    if let Some(current) = notice::current(&app.notice, Instant::now()) {
+        // Over the key hints, leaving the transport buttons visible.
+        let hint_x = app
+            .timeline
+            .hits
+            .last()
+            .map_or(footer.x, |hit| hit.rect.right().saturating_add(1))
+            .min(footer.right());
+        let hint = Rect::new(hint_x, footer.y, footer.right() - hint_x, footer.height);
+        notice::render(frame, hint, current, palette);
+    }
+    if app.run_filter.editing {
+        run_filter::render_input(frame, footer, &app.run_filter, palette);
+    }
+    if let Some(confirm) = &app.cancel_confirm {
+        run_command::render_confirm(frame, footer, confirm, palette);
+    }
+    if let Some(picker) = &app.trace_picker {
+        trace_picker::render(frame, area, picker, palette);
+    }
+    if let Some(state) = &app.help {
+        help::render(frame, area, state, palette);
+    }
     if let Some(picker) = &app.theme_picker {
-        theme_picker::render(frame, area, picker, &palette);
+        theme_picker::render(frame, area, picker, palette);
     }
 }
 
@@ -2239,7 +2572,8 @@ fn draw_runs(
 ) {
     let palette = &app.palette;
     let height = area.height.saturating_sub(2) as usize;
-    let selected = summaries
+    let runs = run_filter::visible(summaries, &app.run_filter);
+    let selected = runs
         .iter()
         .position(|summary| Some(&summary.run_id) == app.selected_run.as_ref())
         .unwrap_or(0);
@@ -2248,7 +2582,7 @@ fn draw_runs(
     } else if height > 0 && selected >= app.runs_scroll + height {
         app.runs_scroll = selected + 1 - height;
     }
-    let lines: Vec<Line> = summaries
+    let lines: Vec<Line> = runs
         .iter()
         .enumerate()
         .skip(app.runs_scroll)
@@ -2329,7 +2663,7 @@ fn draw_runs(
         .title(if collapsed {
             " R ".to_string()
         } else {
-            format!(" Runs ({}) ↔ ", summaries.len())
+            app.run_filter.title(runs.len(), summaries.len())
         })
         .style(Style::default().bg(palette.panel_bg))
         .border_style(pane_border(palette, app.focus == Focus::Runs));

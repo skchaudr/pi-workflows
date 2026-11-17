@@ -60,7 +60,7 @@ pub fn render(
     let Some(view) = view else {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
-                " ,: theme  Tab: focus  q: quit",
+                super::help::FOOTER_KEYS_EMPTY,
                 Style::default().fg(palette.muted),
             )))
             .style(Style::default().bg(palette.app_bg)),
@@ -162,7 +162,7 @@ pub fn render(
         )
     } else {
         Span::styled(
-            format!(" {}x  f: follow  z: density  ,: theme  q: quit", view.speed),
+            format!(" {}x  {}", view.speed, super::help::FOOTER_KEYS),
             Style::default().fg(palette.muted),
         )
     };

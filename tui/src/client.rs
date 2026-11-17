@@ -1,5 +1,6 @@
 //! Reconnecting client used by local Unix-socket and remote WebSocket modes.
 
+use crate::client_commands::{build_command, CommandIds, CommandOutcome, CommandTracker};
 use crate::layout::{layout_graph, GraphLayout};
 use crate::protocol::{
     encode_request, parse_server_message, ClientRequest, PageKind, ServerMessage, PROTOCOL_ID,
@@ -458,6 +459,9 @@ struct Shared {
     page_requests: HashMap<(String, PageKind), u64>,
     content_requests: HashMap<(String, String), u64>,
     artifacts: HashMap<(String, String), ArtifactEntry>,
+    command_ids: CommandIds,
+    commands: CommandTracker,
+    command_results: Vec<(ClientRequest, CommandOutcome)>,
 }
 
 #[derive(Clone)]
@@ -610,6 +614,27 @@ impl RemoteRuns {
             .collect()
     }
 
+    /// Queue a state-changing command (`run.pause`, `run.resume`,
+    /// `run.cancel`); it is sent, and re-sent after a reconnect, until the
+    /// server answers it.
+    pub fn send_command(&self, operation: &str, run_id: &str) {
+        let mut shared = self.shared.lock().unwrap();
+        let state = &mut *shared;
+        let command = build_command(&mut state.command_ids, operation, run_id);
+        state.commands.track(command);
+        drop(shared);
+        self.wake();
+    }
+
+    pub fn command_pending(&self, run_id: &str) -> bool {
+        self.shared.lock().unwrap().commands.is_pending(run_id)
+    }
+
+    /// Answered commands since the last call, oldest first.
+    pub fn take_command_results(&self) -> Vec<(ClientRequest, CommandOutcome)> {
+        std::mem::take(&mut self.shared.lock().unwrap().command_results)
+    }
+
     pub fn view(&mut self, run_id: &str) -> Option<&RemoteView> {
         let raw = self.shared.lock().unwrap().raw_views.get(run_id).cloned();
         let Some((_, revision, generation, raw)) = raw else {
@@ -716,6 +741,7 @@ async fn run_reconnecting(
             state.connected = false;
             state.connecting = true;
             state.reconnect_attempt = attempt;
+            state.commands.connection_lost();
         }
         let result = match &endpoint {
             Endpoint::WebSocket(url) => run_websocket(url, Arc::clone(&shared), &mut wake).await,
@@ -837,8 +863,10 @@ fn reconcile_requests(
     sent: &mut HashSet<String>,
     counter: &mut u64,
 ) -> Vec<ClientRequest> {
-    let (watched, pages, contents, revisions, run_list_request) = {
-        let state = shared.lock().unwrap();
+    let (watched, pages, contents, revisions, run_list_request, commands) = {
+        let mut guard = shared.lock().unwrap();
+        let state = &mut *guard;
+        let commands = state.commands.take_unsent(&mut state.command_ids);
         (
             state.watched.clone(),
             state.page_requests.clone(),
@@ -849,6 +877,7 @@ fn reconcile_requests(
                 .map(|(run_id, (_, revision, _, _))| (run_id.clone(), *revision))
                 .collect::<HashMap<_, _>>(),
             state.run_list_request.clone(),
+            commands,
         )
     };
     let mut requests = Vec::new();
@@ -939,6 +968,7 @@ fn reconcile_requests(
             ));
         }
     }
+    requests.extend(commands);
     requests
 }
 
@@ -996,6 +1026,17 @@ fn handle_server_message(text: &str, shared: &Arc<Mutex<Shared>>) -> Result<()> 
             _ => {}
         },
         ServerMessage::Response(response) => {
+            {
+                // Command outcomes belong to the command, not the connection.
+                let mut state = shared.lock().unwrap();
+                if state.commands.owns(&response.request_id) {
+                    let outcome = CommandOutcome::from_response(&response);
+                    if let Some(done) = state.commands.complete(&response.request_id, outcome) {
+                        state.command_results.push(done);
+                    }
+                    return Ok(());
+                }
+            }
             if response.outcome == "unavailable"
                 || response.outcome == "rejected"
                 || response.outcome == "notFound"

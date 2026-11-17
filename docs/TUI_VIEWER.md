@@ -19,7 +19,7 @@ Large values use server content references. `piw` fetches workflow definitions, 
 
 ## Snapshot decoding
 
-The Workflow Server owns the advisory `display.controls` strings. The current values are `pause`, `resume`, `cancel`, `answer`, `human-answer`, `update`, `submit`, and `review`. The Rust run document accepts other string values so a future display-only control cannot stop the whole run from loading. `piw` does not execute these strings. Executable protocol operations remain closed and strictly validated.
+The Workflow Server owns the advisory `display.controls` strings. The current values are `pause`, `resume`, `cancel`, `answer`, `human-answer`, `update`, `submit`, and `review`. The Rust run document accepts other string values so a future display-only control cannot stop the whole run from loading. `piw` never executes a control string itself; it reads `pause`, `resume`, and `cancel` only to decide whether `p` or `x` may send the matching closed `run.pause`, `run.resume`, or `run.cancel` request, which the server validates. Executable protocol operations remain closed and strictly validated.
 
 The Rust client gives each selected run one decode state:
 
@@ -266,11 +266,25 @@ The server resolves expanded prompt and output fields from durable content. Loca
   `G` and `L` are its keyboard shortcuts.
 - Focus: Tab cycles Runs → Graph → Inspector. Click the full `[symbol Tab]`
   buttons, or use `t` or `1`–`4`, to change inspector tabs.
-- Graph: arrows or `hjkl` pan, `0` resets, `f` toggles centered follow, and
-  `z`, `+`, or `-` switches boxed/compact density. Clicking a node selects its
-  latest visible attempt. Dragging inside the graph pans.
-- Browser: `b` expands or collapses it. Up/Down or `j`/`k` selects a run. Drag
-  its right border to resize it.
+- Graph: arrows or `hjkl` move to the nearest node in that direction, `n`/`N`
+  cycle nodes in reading order, and Enter moves focus to the Inspector. Moving
+  turns follow off and scrolls the node into view; a node that has run also
+  shows its latest visible attempt. Shift+arrows pan, `0` resets, `f` toggles
+  centered follow, and `z`, `+`, or `-` switches boxed/compact density.
+  Clicking a node selects its latest visible attempt. Dragging inside the
+  graph pans.
+- Browser: `b` expands or collapses it. Up/Down or `j`/`k` selects a run. `/`
+  filters runs by id, workflow, title, or status (space-separated terms must
+  all match; Enter keeps the filter, Escape clears it) and `a` toggles
+  active-only. The title shows `shown/total` while a filter is on. Drag its
+  right border to resize it.
+- Run control: `p` pauses or resumes the selected run and `x` cancels it after
+  a y/N prompt, when the server offers that control. The outcome appears in the
+  footer.
+- Traces and source: `o` opens the run's agent traces with `traces` (a picker
+  appears when several match its Pi session), `e` opens a file workflow source
+  in `$VISUAL`/`$EDITOR`, and `y` copies the run id to the clipboard (OSC 52).
+- `?` shows every key binding.
 - Inspector: Enter expands the selected step, trace payload, or conversation
   entry. In Trace, `v` changes scope. In Info, `<` and `>` load the previous or next settings, follow-up, and current-update pages. Page Up/Down scrolls long content. Drag its top border to resize the bottom panel.
 - Theme: `,` opens the picker; arrows or `j`/`k` preview. Click `[✓ Apply]` or
