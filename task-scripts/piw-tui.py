@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-piw-tui.py: ten parallel slices that add a keyboard-first layer to the piw viewer (Rust, tui/src/ui/).
+piw-tui.py: eleven parallel slices that add a keyboard-first layer to the piw viewer (Rust, tui/src/ui/).
 
 Pure text generation, no tools. Every slice owns ONE new file, gets only the context that file needs, and returns
 the complete file. Nothing edits an existing file, so slices cannot conflict. The ~30 lines of wiring into
@@ -8,7 +8,7 @@ ui/mod.rs and client.rs are done by hand afterwards (each slice's prompt states 
 
   python3 task-scripts/piw-tui.py --dry-run              sizes + estimate, no API call
   python3 task-scripts/piw-tui.py --only run_filter      fire one slice first
-  python3 task-scripts/piw-tui.py                        fire all ten
+  python3 task-scripts/piw-tui.py                        fire all eleven
 
 Files land in task-scripts/piw-tui_out/<output_file>; every raw return is kept in piw-tui_out/_returns/<id>.md.
 Copy the .rs files into tui/src/ui/ yourself once reviewed.
@@ -301,6 +301,9 @@ Content:
     `p` pause or resume the selected run               `x` cancel the selected run (asks y/N)
     `o` open the run's agent traces                    `e` edit the run's workflow source in $VISUAL/$EDITOR
     `y` copy the run id to the clipboard               `?` this help
+  and, while the Graph pane has focus (these REPLACE panning on the plain arrows and `hjkl`):
+    arrows or `hjkl` move to the nearest node that way  Shift+arrows pan the graph
+    `n` / `N` next / previous node                      Enter show the selected node in the Inspector
 - Groups, in this order: Replay, Focus, Graph, Runs, Inspector, Run control, Traces and source, Theme, General.
 
 Public surface:
@@ -367,6 +370,45 @@ Public surface:
     pub fn copy(text: &str) -> Result<(), String>;      // writes osc52_sequence(text) to stdout and flushes; map I/O errors to String
     pub fn copied_notice(text: &str) -> String;         // "copied 20261115T021043931Z-landing-9197de92"; long text shortened with "…" after 40 chars
 Tests: exact sequence for a known string (compute the base64 of "hello" by hand: aGVsbG8=), empty and oversized rejection, the notice shortening, multi-byte text round-trips through base64 decode.
+""" + RULES,
+    },
+    {
+        "custom_id": "graph_nav",
+        "output_file": "tui/src/ui/graph_nav.rs",
+        "context_files": [],
+        "prompt": """
+Write `graph_nav.rs`: keyboard movement between the nodes of the workflow graph. Today the graph pane can only be
+panned with the keyboard; choosing a node needs a mouse click. This module is pure geometry: it answers "which node is
+next" and "how must the camera move to show it". The wiring already has `select_graph_node(&node_id)`, which selects
+the node and shows its details in the inspector, so you only return node ids and camera offsets.
+
+The viewer keeps the on-canvas rectangle of every drawn node. Import this existing type with
+`use crate::render::NodeBounds;` and do NOT define it; it is shown so you know its fields:
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct NodeBounds { pub node_id: String, pub x: i64, pub y: i64, pub width: i64, pub height: i64 }
+Coordinates are canvas cells: x grows right, y grows down. The camera is `graph_offset: (i64, i64)`, the canvas cell
+shown at the top-left of the viewport; the viewport is `(width, height)` in cells.
+
+Public surface:
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)] pub enum Direction { Left, Right, Up, Down }
+    pub fn neighbour(nodes: &[NodeBounds], current: Option<&str>, direction: Direction) -> Option<String>;
+        // The nearest node whose centre lies strictly in `direction` from the current node's centre. Score each
+        // candidate as (distance along the direction) + 2 * (distance across it) and take the lowest; break ties by
+        // (y, x, node_id). None if no node lies that way (the selection then stays put). If `current` is None or is
+        // not in `nodes`, return first(nodes).
+    pub fn cycle(nodes: &[NodeBounds], current: Option<&str>, forward: bool) -> Option<String>;
+        // Next or previous node in reading order (sort by y, then x, then node_id), wrapping at both ends. If `current`
+        // is None or unknown: the first node when forward, the last when not. None only when `nodes` is empty.
+    pub fn first(nodes: &[NodeBounds]) -> Option<String>;      // first in reading order
+    pub fn reveal_offset(node: &NodeBounds, offset: (i64, i64), viewport: (usize, usize), margin: i64) -> (i64, i64);
+        // The smallest camera move that puts the whole node, plus `margin` cells around it, inside the viewport. No
+        // move on an axis where it already fits. If the node plus margin is larger than the viewport on an axis, align
+        // its top/left edge (minus margin). Never panics on a zero-sized viewport.
+Use integer arithmetic only (compare doubled centres, 2*x + width, to avoid halves). No floats.
+Tests: a 3x3 grid of nodes: each direction from the centre and from a corner (None off the edge); a node that is
+slightly off-axis still wins over a far on-axis one only when its score is lower; tie-break order; cycle forward and
+backward with wrap; cycle and neighbour with unknown/None current; empty slice; reveal_offset when already visible
+(unchanged), off each of the four sides, node larger than the viewport, zero-sized viewport.
 """ + RULES,
     },
     {
