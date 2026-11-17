@@ -2300,7 +2300,7 @@ fn draw(frame: &mut Frame, app: &mut App, summaries: &[RunSummary]) {
     // labels are also their complete mouse targets.
     let inspector_block = Block::default()
         .borders(Borders::ALL)
-        .title(" Inspector · click a tab ")
+        .title(" Inspector · t or 1-4: tab ")
         .style(Style::default().bg(palette.panel_bg))
         .border_style(pane_border(&palette, focus == Focus::Inspector));
     let inspector_inner = inspector_block.inner(inspector_rect);
