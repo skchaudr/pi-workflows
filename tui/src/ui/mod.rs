@@ -43,7 +43,7 @@ use ratatui::backend::TestBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style, Stylize as _};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::{Frame, Terminal};
 use run_command::RunOp;
 use serde_json::Value;
@@ -2435,12 +2435,15 @@ fn draw_overlays(frame: &mut Frame, app: &App, area: Rect, transport: Rect, pale
             .map_or(footer.x, |hit| hit.rect.right().saturating_add(1))
             .min(footer.right());
         let hint = Rect::new(hint_x, footer.y, footer.right() - hint_x, footer.height);
+        frame.render_widget(Clear, hint); // Paragraph leaves old glyphs in cells it does not write
         notice::render(frame, hint, current, palette);
     }
     if app.run_filter.editing {
+        frame.render_widget(Clear, footer);
         run_filter::render_input(frame, footer, &app.run_filter, palette);
     }
     if let Some(confirm) = &app.cancel_confirm {
+        frame.render_widget(Clear, footer);
         run_command::render_confirm(frame, footer, confirm, palette);
     }
     if let Some(picker) = &app.trace_picker {
