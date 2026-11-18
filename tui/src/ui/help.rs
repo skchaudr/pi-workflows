@@ -107,7 +107,7 @@ pub const BINDINGS: &[Binding] = &[
     },
     Binding {
         group: "Graph",
-        keys: "Enter / Space",
+        keys: "Enter",
         action: "open the node details popup (h/l or arrows: previous/next node)",
     },
     Binding {
@@ -511,7 +511,7 @@ mod tests {
             ("Graph", "n / N", "next / previous node"),
             (
                 "Graph",
-                "Enter / Space",
+                "Enter",
                 "open the node details popup (h/l or arrows: previous/next node)",
             ),
         ];

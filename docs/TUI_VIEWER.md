@@ -267,7 +267,7 @@ The server resolves expanded prompt and output fields from durable content. Loca
 - Focus: Tab cycles Runs → Graph → Inspector; Shift+Tab cycles backwards. Click the full `[symbol Tab]`
   buttons, or use `t` or `1`–`4`, to change inspector tabs.
 - Graph: arrows or `hjkl` move to the nearest node in that direction, `n`/`N`
-  cycle nodes in reading order, and Enter or Space opens a details popup for
+  cycle nodes in reading order, and Enter opens a details popup for
   the node (status, timing, edges, definition, prompt, output). In the popup,
   Left/Right or `h`/`l` step to the previous/next node, `j`/`k` scroll, and
   Escape closes. Keyboard moves may jump the replay forward to the node. Moving

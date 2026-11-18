@@ -1325,6 +1325,11 @@ impl App {
     }
 
     fn handle_node_modal_key(&mut self, key: KeyEvent) {
+        if key.code == KeyCode::Char(' ') {
+            // Space stays play/pause everywhere, including over the popup.
+            self.apply_timeline_action(timeline::TimelineAction::TogglePlayback);
+            return;
+        }
         let (width, visible_rows) = node_modal::body_size(self.frame_rect);
         let Some(modal) = self.node_modal.as_mut() else {
             return;
@@ -1545,7 +1550,7 @@ fn handle_key(app: &mut App, summaries: &[RunSummary], key: KeyEvent) {
                 (Focus::Runs, _) => Focus::Inspector,
             };
         }
-        KeyCode::Char(' ') | KeyCode::Enter if app.focus == Focus::Graph => app.open_node_modal(),
+        KeyCode::Enter if app.focus == Focus::Graph => app.open_node_modal(),
         // Replay transport (global).
         KeyCode::Char('[') => app.step_back(),
         KeyCode::Char(']') => app.step_forward(),
