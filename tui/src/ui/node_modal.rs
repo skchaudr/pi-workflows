@@ -355,6 +355,7 @@ pub fn render(
     detail: &NodeDetail,
     state: &NodeModalState,
     position: (usize, usize),
+    attempt: Option<&str>,
     palette: &Palette,
 ) {
     let popup = popup_rect(area);
@@ -367,6 +368,8 @@ pub fn render(
     let clean_id = sanitize_text(&detail.node_id);
     let top_title = if position.1 == 0 {
         format!(" {clean_id} ")
+    } else if let Some(attempt) = attempt.filter(|label| !label.is_empty()) {
+        format!(" {clean_id} · {attempt} · {}/{} ", position.0, position.1)
     } else {
         format!(" {clean_id} · {}/{} ", position.0, position.1)
     };

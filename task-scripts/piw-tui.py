@@ -473,6 +473,40 @@ sequence comes out without the ESC byte; body_size on a tiny area does not under
 """ + RULES,
     },
     {
+        "custom_id": "node_walk",
+        "output_file": "tui/src/ui/node_walk.rs",
+        "context_files": [],
+        "prompt": """
+Write `node_walk.rs`: the order in which the node details popup walks a workflow run. The popup shows one executed step
+at a time; Left/Right (or `h`/`l`) must move to the previous/next step IN THE ORDER THE RUN EXECUTED THEM, so the user
+reads the run as a story, including repeated attempts of the same node, and never has to think about the shape of the
+graph or its forks. Nodes that never ran are simply not in the walk. This module is pure: no rendering, no I/O.
+
+Input is the run's executed steps, oldest first, as their node ids (a node id repeats when the node ran again).
+
+Public surface (the wiring calls exactly this):
+    pub struct WalkEntry {
+        pub step_index: usize,     // position in the input slice
+        pub node_id: String,
+        pub attempt: usize,        // 1-based: which run of this node this step is
+        pub attempts: usize,       // how many times this node ran in the whole input
+    }
+    pub fn entries(node_ids: &[&str]) -> Vec<WalkEntry>;          // one per input element, same order
+    pub fn locate(entries: &[WalkEntry], node_id: &str, upper: usize) -> Option<usize>;
+        // Index of the LATEST entry for `node_id` whose step_index <= upper. None if the node has no such entry.
+        // Used to find where the popup currently is: `upper` is the replay position.
+    pub fn step(len: usize, current: Option<usize>, forward: bool) -> Option<usize>;
+        // The neighbour in execution order. No wrapping: None when moving forward from the last entry or backward
+        // from the first (the wiring then says "last step" / "first step"). When `current` is None (the popup is on a
+        // node that never ran) or is out of range: forward -> Some(0), backward -> Some(len - 1). len 0 -> None.
+    pub fn attempt_label(entry: &WalkEntry) -> Option<String>;
+        // None when the node ran once; otherwise "2 of 3".
+Tests: entries for an input with repeats (attempt and attempts numbering, order, step_index); empty input; locate with
+upper before, at and after each attempt, an unknown node, and an upper beyond the end; step at both ends, in the
+middle, with None, with an out-of-range current, and len 0 and 1; attempt_label for single and repeated nodes.
+""" + RULES,
+    },
+    {
         "custom_id": "keyboard_audit",
         "output_file": "docs/piw-keyboard-audit.md",
         "raw": True,

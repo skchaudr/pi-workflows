@@ -11,6 +11,7 @@ mod graph;
 mod graph_nav;
 mod help;
 mod node_modal;
+mod node_walk;
 mod notice;
 mod run_command;
 mod run_filter;
@@ -413,7 +414,10 @@ struct NodeModal {
     state: node_modal::NodeModalState,
     node_id: String,
     detail: node_modal::NodeDetail,
+    /// 1-based index in execution order, and how many steps ran.
     position: (usize, usize),
+    /// Set when this node ran more than once (`2 of 3`).
+    attempt: Option<String>,
 }
 
 struct App {
@@ -1304,17 +1308,95 @@ impl App {
     ) -> Option<NodeModal> {
         let run_id = self.selected_run.clone()?;
         let replay = self.replay;
-        let detail = node_detail(&self.provider.data(&run_id)?, &node_id, replay);
-        let mut order: Vec<&NodeBounds> = self.graph_nodes.iter().collect();
-        order.sort_by(|a, b| (a.y, a.x, &a.node_id).cmp(&(b.y, b.x, &b.node_id)));
-        let index = order.iter().position(|node| node.node_id == node_id);
-        let position = index.map_or((0, 0), |index| (index + 1, order.len()));
+        let data = self.provider.data(&run_id)?;
+        let detail = node_detail(&data, &node_id, replay);
+        let ids: Vec<&str> = data
+            .state
+            .steps
+            .iter()
+            .map(|step| step.node_id.as_str())
+            .collect();
+        let walk = node_walk::entries(&ids);
+        let upper = replay.unwrap_or(data.step_total as i64 - 1) - data.step_start as i64;
+        let located = (upper >= 0)
+            .then_some(upper as usize)
+            .and_then(|upper| node_walk::locate(&walk, &node_id, upper));
+        let position = located.map_or((0, 0), |index| (index + 1, walk.len()));
+        let attempt = located.and_then(|index| node_walk::attempt_label(&walk[index]));
         Some(NodeModal {
             state,
             node_id,
             detail,
             position,
+            attempt,
         })
+    }
+
+    /// Executed steps oldest-first, and the replay cursor inside that list.
+    /// The cursor is `None` when it sits before the first step.
+    fn execution_walk(&mut self) -> Option<(Vec<node_walk::WalkEntry>, Option<usize>)> {
+        let run_id = self.selected_run.as_deref()?;
+        let data = self.provider.data(run_id)?;
+        let upper = self.replay.unwrap_or(data.step_total as i64 - 1) - data.step_start as i64;
+        let ids: Vec<&str> = data
+            .state
+            .steps
+            .iter()
+            .map(|step| step.node_id.as_str())
+            .collect();
+        let entries = node_walk::entries(&ids);
+        let upper = (upper >= 0).then_some(upper as usize);
+        Some((entries, upper))
+    }
+
+    /// Put the popup, the graph focus, and the replay cursor on one executed step.
+    fn show_executed_step(&mut self, step_index: usize) {
+        let Some(run_id) = self.selected_run.clone() else {
+            return;
+        };
+        let jump = {
+            let Some(data) = self.provider.data(&run_id) else {
+                return;
+            };
+            let Some(step) = data.state.steps.get(step_index) else {
+                return;
+            };
+            let temporal = data
+                .session_events
+                .iter()
+                .rposition(|event| {
+                    event.get("attemptId").and_then(Value::as_str) == Some(step.attempt_id.as_str())
+                })
+                .map(|index| data.session_event_start as i64 + index as i64);
+            Some((
+                step.node_id.clone(),
+                data.step_start as i64 + step_index as i64,
+                temporal,
+            ))
+        };
+        let Some((node_id, absolute, temporal)) = jump else {
+            return;
+        };
+        if let Some(node) = self.graph_nodes.iter().find(|node| node.node_id == node_id) {
+            let viewport = (
+                self.graph_rect.width.saturating_sub(2) as usize,
+                self.graph_rect.height.saturating_sub(2) as usize,
+            );
+            self.graph_offset = graph_nav::reveal_offset(node, self.graph_offset, viewport, 1);
+        }
+        self.follow = false;
+        self.playing = false;
+        self.focused_node = Some(node_id.clone());
+        self.temporal_replay = temporal;
+        if temporal.is_some() {
+            self.sync_step_to_temporal();
+        } else {
+            self.replay = Some(absolute);
+        }
+        if let Some(modal) = self.node_modal.as_mut() {
+            modal.node_id = node_id;
+            modal.state.reset();
+        }
     }
 
     /// Rebuild the open popup's detail from current run data.
@@ -1344,12 +1426,22 @@ impl App {
             node_modal::ModalOutcome::Prev => false,
             node_modal::ModalOutcome::Next => true,
         };
-        modal.state.reset();
-        let next = graph_nav::cycle(&self.graph_nodes, self.focused_node.as_deref(), forward);
-        self.focus_graph_node(next);
-        if let (Some(modal), Some(node_id)) = (self.node_modal.as_mut(), &self.focused_node) {
-            modal.node_id = node_id.clone();
-        }
+        let Some((entries, upper)) = self.execution_walk() else {
+            return;
+        };
+        let current = self.node_modal.as_ref().and_then(|modal| {
+            upper.and_then(|upper| node_walk::locate(&entries, &modal.node_id, upper))
+        });
+        let Some(next) = node_walk::step(entries.len(), current, forward) else {
+            self.notice = Some(Notice::info(if forward {
+                "last step"
+            } else {
+                "first step"
+            }));
+            return;
+        };
+        let step_index = entries[next].step_index;
+        self.show_executed_step(step_index);
         self.refresh_node_modal();
     }
 
@@ -2570,6 +2662,7 @@ fn draw_overlays(frame: &mut Frame, app: &App, area: Rect, transport: Rect, pale
             &modal.detail,
             &modal.state,
             modal.position,
+            modal.attempt.as_deref(),
             palette,
         );
     }
