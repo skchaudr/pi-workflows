@@ -76,6 +76,11 @@ pub const BINDINGS: &[Binding] = &[
     },
     Binding {
         group: "Focus",
+        keys: "Shift+Tab",
+        action: "Cycle focus backwards",
+    },
+    Binding {
+        group: "Focus",
         keys: "t",
         action: "Cycle inspector tab",
     },
@@ -102,8 +107,8 @@ pub const BINDINGS: &[Binding] = &[
     },
     Binding {
         group: "Graph",
-        keys: "Enter",
-        action: "show the selected node in the Inspector",
+        keys: "Enter / Space",
+        action: "open the node details popup (h/l or arrows: previous/next node)",
     },
     Binding {
         group: "Graph",
@@ -504,7 +509,11 @@ mod tests {
             ),
             ("Graph", "Shift+arrows", "pan the graph"),
             ("Graph", "n / N", "next / previous node"),
-            ("Graph", "Enter", "show the selected node in the Inspector"),
+            (
+                "Graph",
+                "Enter / Space",
+                "open the node details popup (h/l or arrows: previous/next node)",
+            ),
         ];
 
         for (group, keys, action) in expected {

@@ -412,6 +412,67 @@ backward with wrap; cycle and neighbour with unknown/None current; empty slice; 
 """ + RULES,
     },
     {
+        "custom_id": "node_modal",
+        "output_file": "tui/src/ui/node_modal.rs",
+        "context_files": [f"{CTX}/interfaces.rs.txt", "tui/src/ui/theme_picker.rs"],
+        "prompt": """
+Write `node_modal.rs`: a centred popup that shows everything known about one workflow graph node. In the Graph pane the
+user moves between nodes with the keyboard and presses Enter or Space on a node; this popup opens over the graph. While
+it is open, Left/Right (or `h`/`l`) step to the previous/next node WITHOUT closing it, so the user can walk the whole
+graph reading node after node. `theme_picker.rs` shows the house style for a ratatui popup (Clear, Block, palette use).
+
+The hand wiring owns the run data. It builds a `NodeDetail` for the current node each frame and reacts to the outcome
+of `handle_key`, so this module needs no knowledge of runs: it is state, key handling, layout and rendering.
+
+Public surface (the wiring calls exactly this):
+    pub struct Section { pub title: String, pub body: String }      // e.g. "prompt", "output", "error"; body may be long, multi-line
+    pub struct NodeDetail {
+        pub node_id: String,
+        pub node_type: String,                    // "agent", "action", "human", ... ; may be empty when unknown
+        pub status: String,                       // "completed", "failed", "running", "not run yet", ...
+        pub level: Level,                         // colours the status
+        pub fields: Vec<(String, String)>,        // short label/value rows: ("attempts","2"), ("duration","1m 04s"), ("branch","ok -> deploy"), ...
+        pub sections: Vec<Section>,               // long text blocks, shown after the fields in the given order
+    }
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)] pub enum Level { Neutral, Running, Success, Warning, Error }
+    pub struct NodeModalState { pub scroll: usize }
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)] pub enum ModalOutcome { Continue, Close, Prev, Next }
+    impl NodeModalState {
+        pub fn new() -> Self;
+        pub fn reset(&mut self);                  // scroll back to 0; the wiring calls it after Prev/Next
+        pub fn handle_key(&mut self, key: crossterm::event::KeyEvent, visible_rows: usize, total_rows: usize) -> ModalOutcome;
+            // Left / `h` -> Prev.   Right / `l` -> Next.   Tab -> Next, BackTab -> Prev.
+            // Down / `j` and Up / `k` scroll one row; PageDown / PageUp scroll visible_rows - 1 (at least 1);
+            // `g` / Home to the top, `G` / End to the bottom. Scroll is clamped to total_rows.saturating_sub(visible_rows).
+            // Esc, `q`, Enter, Space -> Close.  Anything else -> Continue (the popup swallows the key).
+    }
+    pub fn popup_rect(area: ratatui::layout::Rect) -> ratatui::layout::Rect;
+        // centred; about 70% of the width (min 40, max 100) and 70% of the height (min 10), never larger than `area`.
+    pub fn lines(detail: &NodeDetail, width: usize, palette: &crate::theme::Palette) -> Vec<ratatui::text::Line<'static>>;
+        // The body, already wrapped to `width` display columns (unicode-width; never wider, even for width 1; width 0 -> empty Vec).
+        // Order: a status row ("status  completed", the value coloured by level: Neutral=palette.subtext,
+        // Running=palette.running, Success=palette.success, Warning=palette.warning, Error=palette.error); "type  <node_type>"
+        // when non-empty; one row per field with the label in palette.muted padded to a common label column and long values
+        // wrapped under the value column; then for each section a blank line, a heading "── <title> ──" in palette.accent,
+        // and the body wrapped to width (keep its own line breaks; an empty body shows "—").
+        // Run EVERY piece of text through crate::format::sanitize_text before measuring it (it strips ANSI and control characters).
+    pub fn render(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, detail: &NodeDetail, state: &NodeModalState, position: (usize, usize), palette: &crate::theme::Palette);
+        // Clear + bordered Block in popup_rect(area) (bg palette.panel_bg, border palette.border_focused).
+        // Top title: " <node_id> · 3/7 " from position = (1-based index, total); omit the " · n/m" part when total is 0.
+        // Bottom title: " ←/h prev · →/l next · j/k scroll · Esc close ", shortened to " ←→ node · Esc close " when the
+        // popup is narrower than the long form. Body = lines(..) scrolled by state.scroll (clamp it for drawing; do not
+        // mutate state). When more rows exist below, show "▼" at the right end of the last inner row; "▲" on the first
+        // inner row when scrolled.
+    pub fn body_size(area: ratatui::layout::Rect) -> (usize, usize);
+        // (inner width, inner height) of popup_rect(area) minus the border; the wiring passes these to lines() and handle_key().
+Tests: every key above maps to the stated outcome; scroll clamps at both ends and with total_rows < visible_rows and
+visible_rows 0; reset; popup_rect stays inside tiny areas (0x0, 5x3) and a large one (200x60); lines() never exceeds the
+width for widths 1, 8, 20 and 80 with ASCII, CJK and emoji text in fields and sections (measure with unicode-width on the
+concatenated span contents); a section body keeps its line breaks; empty body shows "—"; text containing an ESC
+sequence comes out without the ESC byte; body_size on a tiny area does not underflow.
+""" + RULES,
+    },
+    {
         "custom_id": "keyboard_audit",
         "output_file": "docs/piw-keyboard-audit.md",
         "raw": True,

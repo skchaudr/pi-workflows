@@ -10,6 +10,7 @@ mod external_launch;
 mod graph;
 mod graph_nav;
 mod help;
+mod node_modal;
 mod notice;
 mod run_command;
 mod run_filter;
@@ -406,6 +407,15 @@ enum TemporalDelay {
     Invalid,
 }
 
+/// The node details popup: its scroll state plus the detail built for the
+/// node it shows, rebuilt every frame so a live run stays current.
+struct NodeModal {
+    state: node_modal::NodeModalState,
+    node_id: String,
+    detail: node_modal::NodeDetail,
+    position: (usize, usize),
+}
+
 struct App {
     provider: Provider,
     /// Whether the sidebar is shown (single-run mode hides it).
@@ -433,6 +443,7 @@ struct App {
     graph_nodes: Vec<NodeBounds>,
     /// Keyboard focus in the graph pane; may be a node that has not run yet.
     focused_node: Option<String>,
+    node_modal: Option<NodeModal>,
     graph_cache: Option<GraphCache>,
     dragging: Option<DragTarget>,
     tab: InspectorTab,
@@ -630,6 +641,7 @@ fn create_app(
         graph_offset: (0, 0),
         graph_nodes: Vec::new(),
         focused_node: None,
+        node_modal: None,
         graph_cache: None,
         dragging: None,
         tab: InspectorTab::Steps,
@@ -1047,7 +1059,9 @@ impl App {
         self.provider.request_artifacts(&run_id, &paths);
     }
 
-    fn select_graph_node(&mut self, node_id: &str) {
+    /// Show a node's latest step. A mouse click stays within the replay
+    /// position; keyboard navigation (`any_time`) may jump forward to it.
+    fn select_graph_node(&mut self, node_id: &str, any_time: bool) {
         let Some(run_id) = self.selected_run.clone() else {
             return;
         };
@@ -1056,7 +1070,11 @@ impl App {
             let Some(data) = self.provider.data(&run_id) else {
                 return;
             };
-            let upper = replay.unwrap_or(data.step_total as i64 - 1) - data.step_start as i64;
+            let upper = if any_time {
+                i64::MAX
+            } else {
+                replay.unwrap_or(data.step_total as i64 - 1) - data.step_start as i64
+            };
             data.state
                 .steps
                 .iter()
@@ -1257,10 +1275,77 @@ impl App {
             );
             self.graph_offset = graph_nav::reveal_offset(node, self.graph_offset, viewport, 1);
         }
-        self.select_graph_node(&node_id);
+        self.select_graph_node(&node_id, true);
         // select_graph_node turns follow on; follow would recentre every frame.
         self.follow = false;
         self.focused_node = Some(node_id);
+    }
+
+    /// Open the details popup on the focused node (the first node if none).
+    fn open_node_modal(&mut self) {
+        if self.focused_node.is_none() {
+            let first = graph_nav::first(&self.graph_nodes);
+            self.focus_graph_node(first);
+        }
+        let state = node_modal::NodeModalState::new();
+        self.node_modal = self
+            .focused_node
+            .clone()
+            .and_then(|node_id| self.build_node_modal(node_id, state));
+        if self.node_modal.is_none() {
+            self.notice = Some(Notice::warn("no graph node to show"));
+        }
+    }
+
+    fn build_node_modal(
+        &mut self,
+        node_id: String,
+        state: node_modal::NodeModalState,
+    ) -> Option<NodeModal> {
+        let run_id = self.selected_run.clone()?;
+        let replay = self.replay;
+        let detail = node_detail(&self.provider.data(&run_id)?, &node_id, replay);
+        let mut order: Vec<&NodeBounds> = self.graph_nodes.iter().collect();
+        order.sort_by(|a, b| (a.y, a.x, &a.node_id).cmp(&(b.y, b.x, &b.node_id)));
+        let index = order.iter().position(|node| node.node_id == node_id);
+        let position = index.map_or((0, 0), |index| (index + 1, order.len()));
+        Some(NodeModal {
+            state,
+            node_id,
+            detail,
+            position,
+        })
+    }
+
+    /// Rebuild the open popup's detail from current run data.
+    fn refresh_node_modal(&mut self) {
+        if let Some(modal) = self.node_modal.take() {
+            self.node_modal = self.build_node_modal(modal.node_id, modal.state);
+        }
+    }
+
+    fn handle_node_modal_key(&mut self, key: KeyEvent) {
+        let (width, visible_rows) = node_modal::body_size(self.frame_rect);
+        let Some(modal) = self.node_modal.as_mut() else {
+            return;
+        };
+        let total_rows = node_modal::lines(&modal.detail, width, &self.palette).len();
+        let forward = match modal.state.handle_key(key, visible_rows, total_rows) {
+            node_modal::ModalOutcome::Continue => return,
+            node_modal::ModalOutcome::Close => {
+                self.node_modal = None;
+                return;
+            }
+            node_modal::ModalOutcome::Prev => false,
+            node_modal::ModalOutcome::Next => true,
+        };
+        modal.state.reset();
+        let next = graph_nav::cycle(&self.graph_nodes, self.focused_node.as_deref(), forward);
+        self.focus_graph_node(next);
+        if let (Some(modal), Some(node_id)) = (self.node_modal.as_mut(), &self.focused_node) {
+            modal.node_id = node_id.clone();
+        }
+        self.refresh_node_modal();
     }
 
     fn select_run_id(&mut self, run_id: String) {
@@ -1282,6 +1367,7 @@ impl App {
         self.graph_offset = (0, 0);
         self.follow = true;
         self.focused_node = None;
+        self.node_modal = None;
     }
 
     fn resize_sidebar(&mut self, divider_column: u16) {
@@ -1391,6 +1477,10 @@ fn handle_key(app: &mut App, summaries: &[RunSummary], key: KeyEvent) {
         }
         return;
     }
+    if app.node_modal.is_some() {
+        app.handle_node_modal_key(key);
+        return;
+    }
     if let Some(picker) = app.trace_picker.as_mut() {
         match picker.handle_key(key) {
             trace_picker::PickerOutcome::Pick(trace_id) => {
@@ -1447,6 +1537,15 @@ fn handle_key(app: &mut App, summaries: &[RunSummary], key: KeyEvent) {
                 (Focus::Inspector, false) => Focus::Graph,
             };
         }
+        KeyCode::BackTab => {
+            app.focus = match (app.focus, app.show_sidebar) {
+                (Focus::Inspector, _) => Focus::Graph,
+                (Focus::Graph, true) => Focus::Runs,
+                (Focus::Graph, false) => Focus::Inspector,
+                (Focus::Runs, _) => Focus::Inspector,
+            };
+        }
+        KeyCode::Char(' ') | KeyCode::Enter if app.focus == Focus::Graph => app.open_node_modal(),
         // Replay transport (global).
         KeyCode::Char('[') => app.step_back(),
         KeyCode::Char(']') => app.step_forward(),
@@ -1519,7 +1618,6 @@ fn handle_key(app: &mut App, summaries: &[RunSummary], key: KeyEvent) {
                         );
                         app.focus_graph_node(next);
                     }
-                    KeyCode::Enter => app.focus = Focus::Inspector,
                     KeyCode::Char('0') => {
                         app.graph_offset = (0, 0);
                         app.follow = true;
@@ -1855,7 +1953,7 @@ fn handle_mouse(app: &mut App, summaries: &[RunSummary], mouse: MouseEvent) {
                         })
                         .map(|node| node.node_id.clone());
                     if let Some(node_id) = node_id {
-                        app.select_graph_node(&node_id);
+                        app.select_graph_node(&node_id, false);
                         app.focused_node = Some(node_id);
                     }
                 }
@@ -1948,6 +2046,7 @@ fn now_ms() -> i64 {
 fn draw(frame: &mut Frame, app: &mut App, summaries: &[RunSummary]) {
     let area = frame.area();
     app.frame_rect = area;
+    app.refresh_node_modal();
     app.inspector_tab_hits.clear();
     let palette = app.palette.clone();
     frame.render_widget(
@@ -2265,6 +2364,11 @@ fn draw(frame: &mut Frame, app: &mut App, summaries: &[RunSummary]) {
     let graph_block = Block::default()
         .borders(Borders::ALL)
         .title(graph_title)
+        .title_bottom(if focus == Focus::Graph {
+            " ←↓↑→ node · n/N cycle · Enter details · Shift+arrows pan "
+        } else {
+            ""
+        })
         .style(Style::default().bg(palette.canvas_bg))
         .border_style(pane_border(&palette, focus == Focus::Graph));
     frame.render_widget(
@@ -2453,6 +2557,16 @@ fn draw_overlays(frame: &mut Frame, app: &App, area: Rect, transport: Rect, pale
     }
     if let Some(picker) = &app.trace_picker {
         trace_picker::render(frame, area, picker, palette);
+    }
+    if let Some(modal) = &app.node_modal {
+        node_modal::render(
+            frame,
+            area,
+            &modal.detail,
+            &modal.state,
+            modal.position,
+            palette,
+        );
     }
     if let Some(state) = &app.help {
         help::render(frame, area, state, palette);
@@ -2681,6 +2795,117 @@ fn draw_runs(
             .block(block),
         area,
     );
+}
+
+/// Everything the details popup shows for one node, limited to the steps
+/// visible at the replay position.
+fn node_detail(data: &RunData, node_id: &str, replay: Option<i64>) -> node_modal::NodeDetail {
+    use node_modal::{Level, Section};
+    let upper = replay.unwrap_or(data.step_total as i64 - 1) - data.step_start as i64;
+    let attempts: Vec<&StepRecord> = data
+        .state
+        .steps
+        .iter()
+        .enumerate()
+        .filter(|(index, step)| *index as i64 <= upper && step.node_id == node_id)
+        .map(|(_, step)| step)
+        .collect();
+    let last = attempts.last().copied();
+    let active = replay.is_none() && data.display.active_node(data.state) == Some(node_id);
+    let (status, level) = match last.map(|step| step.outcome) {
+        _ if active => ("running", Level::Running),
+        Some(NodeOutcome::Ok) => ("completed", Level::Success),
+        Some(NodeOutcome::Failed) => ("failed", Level::Error),
+        Some(NodeOutcome::TimedOut) => ("timed out", Level::Warning),
+        Some(NodeOutcome::Cancelled) => ("cancelled", Level::Warning),
+        None => ("not run yet", Level::Neutral),
+    };
+    let node_type = data
+        .snapshot
+        .and_then(|snapshot| snapshot.node_type(node_id))
+        .or(last.map(|step| step.node_type.as_str()))
+        .unwrap_or_default()
+        .to_string();
+    let mut fields: Vec<(String, String)> = Vec::new();
+    let mut field = |label: &str, value: String| fields.push((label.to_string(), value));
+    if !attempts.is_empty() {
+        field("attempts", attempts.len().to_string());
+    }
+    if let Some(step) = last {
+        field("duration", step_duration(step));
+        field("started", step.started_at.clone());
+        field("finished", step.finished_at.clone());
+        field("attempt id", step.attempt_id.clone());
+        if let Some(action) = &step.action {
+            field("action type", action.action_type.clone());
+            if let Some(command) = &action.command {
+                field("command", command.clone());
+            }
+            if let Some(args) = &action.args {
+                field("arguments", serde_json::to_string(args).unwrap_or_default());
+            }
+            if let Some(cwd) = &action.cwd {
+                field("working dir", cwd.clone());
+            }
+            if let Some(exit_code) = &action.exit_code {
+                field("exit code", exit_code.to_string());
+            }
+        }
+    }
+    let mut sections = Vec::new();
+    let mut section = |title: &str, value: &Value| {
+        let body = match resolved_detail_value(value, data.run_dir, &data.remote_artifacts) {
+            Value::String(text) => text,
+            other => serde_json::to_string_pretty(&other).unwrap_or_else(|_| other.to_string()),
+        };
+        sections.push(Section {
+            title: title.to_string(),
+            body,
+        });
+    };
+    if let Some(snapshot) = data.snapshot {
+        for edge in &snapshot.edges {
+            match edge {
+                EdgeDef::Simple { from, to } if from == node_id => field("next", to.clone()),
+                EdgeDef::Simple { from, to } if to == node_id => field("from", from.clone()),
+                EdgeDef::Switch { from, switch } if from == node_id => {
+                    field("switch on", switch.on.clone());
+                    for (case, target) in &switch.cases {
+                        field(
+                            "branch",
+                            format!("{case} -> {}", target.as_str().unwrap_or_default()),
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    if let Some(step) = last {
+        if let Some(error) = &step.error {
+            section("error", &Value::String(error.clone()));
+        }
+        if !step.output.is_null() {
+            section("output", &step.output);
+        }
+        if !step.prompt.is_null() {
+            section("prompt", &step.prompt);
+        }
+    }
+    if let Some(definition) = data
+        .snapshot
+        .and_then(|snapshot| snapshot.nodes.get(node_id))
+    {
+        section("definition", definition);
+    }
+    node_modal::NodeDetail {
+        node_id: node_id.to_string(),
+        node_type,
+        status: status.to_string(),
+        level,
+        fields,
+        sections,
+    }
 }
 
 fn outcome_glyph(outcome: NodeOutcome, palette: &Palette) -> (&'static str, Style) {

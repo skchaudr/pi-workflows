@@ -264,10 +264,13 @@ The server resolves expanded prompt and output fields from durable content. Loca
 - Replay: `[`/`]` previous/next, Space play/pause, Home or `g` to start, End
   to jump to latest, and `{`/`}` to change speed. Active runs also show Live;
   `G` and `L` are its keyboard shortcuts.
-- Focus: Tab cycles Runs → Graph → Inspector. Click the full `[symbol Tab]`
+- Focus: Tab cycles Runs → Graph → Inspector; Shift+Tab cycles backwards. Click the full `[symbol Tab]`
   buttons, or use `t` or `1`–`4`, to change inspector tabs.
 - Graph: arrows or `hjkl` move to the nearest node in that direction, `n`/`N`
-  cycle nodes in reading order, and Enter moves focus to the Inspector. Moving
+  cycle nodes in reading order, and Enter or Space opens a details popup for
+  the node (status, timing, edges, definition, prompt, output). In the popup,
+  Left/Right or `h`/`l` step to the previous/next node, `j`/`k` scroll, and
+  Escape closes. Keyboard moves may jump the replay forward to the node. Moving
   turns follow off and scrolls the node into view; a node that has run also
   shows its latest visible attempt. Shift+arrows pan, `0` resets, `f` toggles
   centered follow, and `z`, `+`, or `-` switches boxed/compact density.
