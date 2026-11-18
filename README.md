@@ -34,7 +34,7 @@ Or try the npm package without installing it:
 pi -e npm:@osolmaz/pi-workflows
 ```
 
-The Pi package includes the extension and six optional skills:
+The Pi package includes the extension and seven optional skills:
 
 - `pi-workflows` teaches the agent how to operate and author workflows.
 - `monitor` starts and operates the built-in monitor workflow.
@@ -42,6 +42,12 @@ The Pi package includes the extension and six optional skills:
 - `autodoc` records an existing plan in canonical documentation.
 - `autoimplement` implements an existing plan and verifies the result.
 - `sanity-check` reviews whether a contribution is necessary, and whether it is focused and well supported.
+- `parallel-slices` coordinates text-only code generation with explicit interfaces, focused context,
+  staged outputs, and integration and interaction checks. It is a standalone skill, not a built-in workflow.
+
+Use `/skill:parallel-slices` with a task and your chosen generation provider/model. Pi prepares the
+slice contracts and task-local dispatcher, then generates and integrates only within your permission.
+The skill does not depend on Claude or assume a particular model, price, or batch size.
 
 Pi discovers these skills when it loads the package. Use `pi config` to disable
 the extension, all bundled skills, or one skill independently. The equivalent

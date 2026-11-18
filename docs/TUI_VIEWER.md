@@ -270,7 +270,7 @@ The server resolves expanded prompt and output fields from durable content. Loca
   cycle nodes in reading order, and Enter opens a details popup for
   the node (status, timing, edges, definition, prompt, output). In the popup,
   Left/Right or `h`/`l` step to the previous/next node, `j`/`k` scroll, and
-  Escape closes. Keyboard moves may jump the replay forward to the node. Moving
+  Escape closes. Enter opens the same popup from the Runs pane. Keyboard moves may jump the replay forward to the node. Moving
   turns follow off and scrolls the node into view; a node that has run also
   shows its latest visible attempt. Shift+arrows pan, `0` resets, `f` toggles
   centered follow, and `z`, `+`, or `-` switches boxed/compact density.

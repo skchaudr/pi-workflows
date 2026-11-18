@@ -138,6 +138,11 @@ pub const BINDINGS: &[Binding] = &[
     },
     Binding {
         group: "Runs",
+        keys: "Enter",
+        action: "open the node viewer for the selected run",
+    },
+    Binding {
+        group: "Runs",
         keys: "/",
         action: "filter runs (type to narrow; space = AND)",
     },

@@ -169,6 +169,9 @@ describe.sequential("Pi package resource discovery", () => {
     expect(command(commands, "skill:sanity-check")?.sourceInfo?.path).toBe(
       path.join(repoRoot, "skills", "sanity-check", "SKILL.md"),
     );
+    expect(command(commands, "skill:parallel-slices")?.sourceInfo?.path).toBe(
+      path.join(repoRoot, "skills", "parallel-slices", "SKILL.md"),
+    );
   });
 
   it("can disable one bundled skill without disabling the extension", async () => {
@@ -207,6 +210,7 @@ describe.sequential("Pi package resource discovery", () => {
     expect(command(commands, "workflow")).toBeDefined();
     expect(command(commands, "skill:pi-workflows")).toBeUndefined();
     expect(command(commands, "skill:monitor")).toBeUndefined();
+    expect(command(commands, "skill:parallel-slices")).toBeUndefined();
   });
 
   it("can disable the extension without disabling bundled skills", async () => {
@@ -223,5 +227,6 @@ describe.sequential("Pi package resource discovery", () => {
     expect(command(commands, "workflow")).toBeUndefined();
     expect(command(commands, "skill:pi-workflows")).toBeDefined();
     expect(command(commands, "skill:monitor")).toBeDefined();
+    expect(command(commands, "skill:parallel-slices")).toBeDefined();
   });
 });

@@ -1550,7 +1550,7 @@ fn handle_key(app: &mut App, summaries: &[RunSummary], key: KeyEvent) {
                 (Focus::Runs, _) => Focus::Inspector,
             };
         }
-        KeyCode::Enter if app.focus == Focus::Graph => app.open_node_modal(),
+        KeyCode::Enter if app.focus != Focus::Inspector => app.open_node_modal(),
         // Replay transport (global).
         KeyCode::Char('[') => app.step_back(),
         KeyCode::Char(']') => app.step_forward(),

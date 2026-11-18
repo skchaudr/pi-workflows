@@ -112,6 +112,7 @@ describe("Pi package resources", () => {
       "autoimplement/SKILL.md",
       "autoplan/SKILL.md",
       "monitor/SKILL.md",
+      "parallel-slices/SKILL.md",
       "pi-workflows/SKILL.md",
       "sanity-check/SKILL.md",
     ]);
@@ -191,6 +192,21 @@ describe("Pi package resources", () => {
     expect(markdown).toContain("continue without asking again");
     expect(markdown).toContain("Do not ask once per image, package, or task");
     expect(markdown).not.toContain("grants a default cumulative spending ceiling");
+  });
+
+  it("ships the parallel-slices prompt template and execution lessons", async () => {
+    const skillPath = path.join(skillsRoot, "parallel-slices", "SKILL.md");
+    const markdown = await fs.readFile(skillPath, "utf8");
+    const links = [...markdown.matchAll(/\[[^\]]+\]\((references\/[^)]+)\)/gu)].map(
+      (match) => match[1],
+    );
+
+    expect(links).toEqual(["references/slice-template.md", "references/piw-lessons.md"]);
+    for (const link of links) {
+      if (link === undefined) throw new Error("Missing parallel-slices reference path");
+      const reference = await fs.readFile(path.resolve(path.dirname(skillPath), link), "utf8");
+      expect(reference.length).toBeGreaterThan(0);
+    }
   });
 
   it("keeps local references in the workflow skill inside the package", async () => {
