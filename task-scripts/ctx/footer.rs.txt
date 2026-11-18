@@ -1,0 +1,80 @@
+// tui/src/ui/timeline.rs footer hint lines (150-215), verbatim
+            .style(Style::default().bg(palette.app_bg)),
+            slot,
+        );
+        hits.push(TimelineHit {
+            rect: hit_rect,
+            action,
+        });
+    }
+    let hint = if let Some(diagnostic) = view.diagnostic {
+        Span::styled(
+            format!(" {diagnostic}"),
+            Style::default().fg(palette.warning),
+        )
+    } else {
+        Span::styled(
+            format!(" {}x  f: follow  z: density  ,: theme  q: quit", view.speed),
+            Style::default().fg(palette.muted),
+        )
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(hint)).style(Style::default().bg(palette.app_bg)),
+        bottom[button_count],
+    );
+
+    TimelineGeometry {
+        track: top[1],
+        hits,
+    }
+}
+
+fn render_compact(frame: &mut Frame, area: Rect, view: &TimelineView<'_>, palette: &Palette) {
+    let status = status_label(view.status, view.paused);
+    let position = position_label(view);
+    let diagnostic = view
+        .diagnostic
+        .map(|value| format!("  {value}"))
+        .unwrap_or_default();
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                format!(" {} {status} ", status_glyph(view.status)),
+                Style::default()
+                    .fg(status_color(view.status, palette))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("{}  ", view.elapsed),
+                Style::default().fg(palette.subtext),
+            ),
+            Span::styled(
+                position,
+                Style::default()
+                    .fg(position_color(view, palette))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!(
+                    "  {}x  [/]: scrub  f: follow  ,: theme{diagnostic}",
+                    view.speed
+                ),
+                Style::default().fg(palette.muted),
+            ),
+        ]))
+        .style(Style::default().bg(palette.app_bg)),
+        area,
+    );
+
+// tui/src/ui/timeline.rs empty-state hint, shown when no run is selected (60-70), verbatim
+    let Some(view) = view else {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                " ,: theme  Tab: focus  q: quit",
+                Style::default().fg(palette.muted),
+            )))
+            .style(Style::default().bg(palette.app_bg)),
+            area,
+        );
+        return TimelineGeometry::default();
+    };
