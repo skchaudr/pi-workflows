@@ -135,6 +135,14 @@ type AgentNodeBase = WorkflowNodeCommon & {
   nodeType: "agent";
   /** Optional exact tool allowlist. Matching workflow submit/update calls remain allowed. */
   allowedTools?: string[];
+  /**
+   * Name of the acpx agent that runs this step, for example `grok-build` or `claude`. Omit it to
+   * run on the run's own Pi (interactive session or headless child). Not `pi`: acpx's Pi agent
+   * cannot receive the workflow tool. Cannot be combined with `allowedTools` or assistantMessage().
+   */
+  agent?: string;
+  /** Model to select on `agent` before the step runs. Needs `agent`. */
+  model?: string;
   prompt: (context: WorkflowNodeContext) => MaybePromise<string>;
 };
 
@@ -708,6 +716,8 @@ export type WorkflowNodeSnapshot = {
   summary?: string;
   expectedOutput?: AgentExpectedOutput;
   allowedTools?: string[];
+  agent?: string;
+  model?: string;
   settingsRoute?: true;
   actionExecution?: "function" | "shell";
   effect?: { type: string; recovery: WorkflowEffectRecovery };
@@ -869,6 +879,10 @@ export type AgentStepRequest = {
   contract: AgentStepContract;
   prompt: string;
   presentation?: AgentStepPresentation;
+  /** The step's `agent`: an executor that can run acpx agents runs the step on it. */
+  agent?: string;
+  /** The step's `model`, applied to `agent`. */
+  model?: string;
   /**
    * Validate a submission from the model. Returns the normalized output or an
    * error message the executor should surface to the model for retry.

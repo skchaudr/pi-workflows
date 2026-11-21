@@ -5144,6 +5144,8 @@ function snapshotNode(
   if (node.nodeType === "agent") {
     if (node.expectedOutput !== undefined) common.expectedOutput = node.expectedOutput;
     if (node.allowedTools !== undefined) common.allowedTools = [...node.allowedTools];
+    if (node.agent !== undefined) common.agent = node.agent;
+    if (node.model !== undefined) common.model = node.model;
   }
   if (node.nodeType === "compute" && node.settingsRoute === true) {
     common.settingsRoute = true;

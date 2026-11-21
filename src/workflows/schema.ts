@@ -54,10 +54,46 @@ function assertCommonNodeFields(node: WorkflowNodeDefinition, nodeId: string): v
   }
 }
 
-export function assertValidAgentNode(node: AgentNodeDefinition, nodeId = "agent"): void {
+function assertValidAgentRouting(node: AgentNodeDefinition, nodeId: string): void {
+  if (node.agent === undefined) {
+    if (node.model !== undefined) {
+      fail(`node ${nodeId} sets model ${JSON.stringify(node.model)}, but model needs agent`);
+    }
+    return;
+  }
+  if (typeof node.agent !== "string" || node.agent.trim() === "") {
+    fail(`node ${nodeId} agent must be a nonempty acpx agent name`);
+  }
+  if (node.agent === "pi") {
+    fail(
+      `node ${nodeId} sets agent "pi", which is not supported: omit agent for Pi steps, they run on the run's own Pi`,
+    );
+  }
+  if (node.model !== undefined && (typeof node.model !== "string" || node.model.trim() === "")) {
+    fail(`node ${nodeId} model must be a nonempty model id`);
+  }
+  if (node.allowedTools !== undefined) {
+    fail(
+      `node ${nodeId} sets agent ${JSON.stringify(node.agent)}, which does not support allowedTools (acpx cannot restrict an agent's tools): remove allowedTools or agent`,
+    );
+  }
+  if (typeof node.expectedOutput === "object") {
+    fail(
+      `node ${nodeId} sets agent ${JSON.stringify(node.agent)}, which does not support assistantMessage() completion: remove assistantMessage() or agent`,
+    );
+  }
+}
+
+/**
+ * `agent()` calls this without a node id, before the step has a name. The agent/model routing
+ * checks wait for the workflow-level pass, which knows the step's id, so their messages name it.
+ */
+export function assertValidAgentNode(node: AgentNodeDefinition, id?: string): void {
+  const nodeId = id ?? "agent";
   if (typeof node.prompt !== "function") {
     fail(`node ${nodeId} requires a prompt function`);
   }
+  if (id !== undefined) assertValidAgentRouting(node, id);
   if (
     node.allowedTools !== undefined &&
     (!Array.isArray(node.allowedTools) ||
