@@ -8,5 +8,12 @@
   },
   "tabWidth": 2,
   "useTabs": false,
-  "ignorePatterns": ["dist/", "node_modules/", "coverage/", "package-lock.json"],
+  "ignorePatterns": [
+    "dist/",
+    "node_modules/",
+    "coverage/",
+    "package-lock.json",
+    "archive/",
+    "task-scripts/",
+  ],
 }

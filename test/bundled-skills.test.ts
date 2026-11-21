@@ -46,7 +46,9 @@ describe("bundled skills", () => {
     expect(markdown).toContain("not a built-in executable workflow");
     expect(markdown).toContain("Keep the user's exact provider, endpoint, and model choice");
     expect(markdown).toContain("Omit tools and tool execution entirely");
-    expect(markdown).toContain("Preparing this skill or a plan is not permission to launch a batch");
+    expect(markdown).toContain(
+      "Preparing this skill or a plan is not permission to launch a batch",
+    );
     expect(markdown).toContain("Tab **and Shift+Tab**");
     expect(markdown).toContain("dispatch only that slice within existing authorization");
   });

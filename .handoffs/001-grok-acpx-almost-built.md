@@ -14,13 +14,13 @@ Sab, 2026-11-20, on why this exists: "It was such a bummer how Pi workflows coul
 
 ## Where things are
 
-| | Path | State |
-|---|---|---|
-| grok-build acpx work | `/Volumes/Mini-SSD/offload/repos/grok-build-acpx`, branch `acpx-tui-slices` | `26053d16`, pushed, clean. 18 commits, about 21,600 lines over 53 files |
-| Build output | `/Volumes/Mini-SSD/offload/repos/grok-build/.git/pi-grok-cargo-target/debug/{xai-grok-pager,grok-acpx-acp}` | debug build; not installed |
-| pi-workflows | `~/repos/pi-workflows`, `main` (origin = `skchaudr/pi-workflows`, upstream = `osolmaz/pi-workflows`) | `3e3a37a`, pushed. 25 ahead of upstream, 0 behind |
-| Demo flows | `/tmp/acpx-demo/{ship,fix,land}.flow.ts`, `input.json`, `slug.py` | the ship → fix → land chain |
-| acpx runs | `~/.acpx/flows/runs/<run>/` | acpx 0.22.0 |
+|                      | Path                                                                                                        | State                                                                   |
+| -------------------- | ----------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| grok-build acpx work | `/Volumes/Mini-SSD/offload/repos/grok-build-acpx`, branch `acpx-tui-slices`                                 | `26053d16`, pushed, clean. 18 commits, about 21,600 lines over 53 files |
+| Build output         | `/Volumes/Mini-SSD/offload/repos/grok-build/.git/pi-grok-cargo-target/debug/{xai-grok-pager,grok-acpx-acp}` | debug build; not installed                                              |
+| pi-workflows         | `~/repos/pi-workflows`, `main` (origin = `skchaudr/pi-workflows`, upstream = `osolmaz/pi-workflows`)        | `3e3a37a`, pushed. 25 ahead of upstream, 0 behind                       |
+| Demo flows           | `/tmp/acpx-demo/{ship,fix,land}.flow.ts`, `input.json`, `slug.py`                                           | the ship → fix → land chain                                             |
+| acpx runs            | `~/.acpx/flows/runs/<run>/`                                                                                 | acpx 0.22.0                                                             |
 
 How the live pane runs (Rex pane "acpx mode", cwd `/tmp/acpx-demo`):
 
@@ -33,10 +33,12 @@ How the live pane runs (Rex pane "acpx mode", cwd `/tmp/acpx-demo`):
 **acpx mode** is an ACP agent, `grok-acpx-acp`, that runs acpx flows and shows them in the pager transcript.
 
 Code is in `crates/codegen/xai-grok-pager-bin/src/bin/grok-acpx-acp/`:
+
 - `main.rs` (written by hand);
 - `agent.rs`, `driver.rs`, `project.rs` (from slices, then fixed by hand).
 
 What it does:
+
 - **Commands:** `/flow <file> [task or JSON]`, `/runs`, `/open <run id>`, `/answer <label>`, `/acpx-help`. A plain message runs the default flow.
 - **Steps:** each step is an inline subagent block with a live 24-row preview of its transcript (prompt, thinking, tool calls, message). Enter opens the full subagent view.
   - The preview is `scrollback/blocks/subagent_preview.rs`, wired through `app/acp_handler/subagent_activity.rs`.
@@ -47,6 +49,7 @@ What it does:
 - **Tests:** 38 `grok-acpx-acp`, 308 pager subagent and 53 verb-group tests pass.
 
 **The `/acpx` modal** comes from the first two slice rounds:
+
 - Files: `views/acpx_modal*`, `scrollback/blocks/acpx_flow.rs`, `app/dispatch/acpx_run.rs`, `slash/commands/acpx.rs`, `acp/acpx_feed.rs`, `acpx/{bundle,graph,launch,sessions}.rs`.
 - Layout: runs grouped by state, with a step-mark strip, on the left; the run's gate, stages, last result and input on the right.
 - Sab, after seeing it on 2026-11-20: keep it.
@@ -82,14 +85,14 @@ What it does:
 
 `docs/plans/2026-11-16-acp-harness-adapter-aha.md`: `WorkflowEngine` takes any `AgentStepExecutor`, and acpx's `AcpRuntime` already matches it one-to-one.
 
-| Step needs | acpx provides |
-|---|---|
-| step identity | `requestId` |
-| time limit | `timeoutMs` |
-| stopping | `cancel()` |
-| prompt accepted | `promptStarted` |
-| live progress | `events` |
-| final result | `completed`, `cancelled` or `failed`, matching the engine's `ok`, `failed`, `timed_out` and `cancelled` |
+| Step needs      | acpx provides                                                                                           |
+| --------------- | ------------------------------------------------------------------------------------------------------- |
+| step identity   | `requestId`                                                                                             |
+| time limit      | `timeoutMs`                                                                                             |
+| stopping        | `cancel()`                                                                                              |
+| prompt accepted | `promptStarted`                                                                                         |
+| live progress   | `events`                                                                                                |
+| final result    | `completed`, `cancelled` or `failed`, matching the engine's `ok`, `failed`, `timed_out` and `cancelled` |
 
 The executor implementations today are `InteractiveExecutor` (`src/server/workflow-runner-entry.ts`) and `RpcStepExecutor` (`src/server/rpc-executor.ts`).
 

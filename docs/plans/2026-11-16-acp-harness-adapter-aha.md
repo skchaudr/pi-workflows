@@ -7,14 +7,14 @@ Date: 2026-11-16. Status: exploration note, not a design or a commitment.
 `WorkflowEngine` takes any `AgentStepExecutor`, and `AcpRuntime` is already that
 interface. The mapping is one-to-one, and it was not coordinated:
 
-| Workflow step needs  | `AcpRuntimeTurnInput` / `AcpRuntimeTurn` provides            |
-| -------------------- | ------------------------------------------------------------ |
-| durable identity     | `requestId: string`                                          |
-| engine-resolved budget | `timeoutMs?: number`                                       |
-| cooperative stop     | `cancel()`, driven by the caller's `AbortSignal`             |
-| dispatch admission   | `promptStarted` (transport accepted the prompt)               |
-| live evidence        | `events`: `text_delta`, `status` (`usage`, `plan`, `tool_call`), `tool_call` |
-| settled outcome      | `result`: `completed` \| `cancelled` \| `failed`             |
+| Workflow step needs    | `AcpRuntimeTurnInput` / `AcpRuntimeTurn` provides                            |
+| ---------------------- | ---------------------------------------------------------------------------- |
+| durable identity       | `requestId: string`                                                          |
+| engine-resolved budget | `timeoutMs?: number`                                                         |
+| cooperative stop       | `cancel()`, driven by the caller's `AbortSignal`                             |
+| dispatch admission     | `promptStarted` (transport accepted the prompt)                              |
+| live evidence          | `events`: `text_delta`, `status` (`usage`, `plan`, `tool_call`), `tool_call` |
+| settled outcome        | `result`: `completed` \| `cancelled` \| `failed`                             |
 
 The four engine outcomes (`ok`, `failed`, `timed_out`, `cancelled`) and the three
 runtime results line up directly, so `$result.outcome` routing works on a
@@ -27,8 +27,8 @@ harness that accepts MCP; `elicitationModes` covers harnesses that do not.
 
 ## Why it matters
 
-`acpx` becomes the transport that turns another harness into a *node in the
-graph* rather than a subprocess. Claude, Droid, Codex, DSH and the rest run in
+`acpx` becomes the transport that turns another harness into a _node in the
+graph_ rather than a subprocess. Claude, Droid, Codex, DSH and the rest run in
 their own hardened harnesses, but under Pi's step contract: durable request id,
 engine deadline, validated submitted output, retry safety from the engine's
 effect key, and records in the same run and the same viewer.
