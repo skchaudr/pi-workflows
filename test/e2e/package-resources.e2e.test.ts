@@ -1,11 +1,11 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { WorkflowClient } from "../../src/client/client.js";
 import { clientSocketPath } from "../../src/client/protocol.js";
+import { makeTempDir as makeTestTempDir } from "../helpers.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const piBin = path.join(repoRoot, "node_modules", ".bin", "pi");
@@ -19,7 +19,7 @@ type CommandInfo = {
 };
 
 async function makeTempDir(): Promise<string> {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-workflows-package-"));
+  const dir = await makeTestTempDir("pi-workflows-package");
   tempFixtures.push({ directory: dir, serverExpected: false });
   return dir;
 }

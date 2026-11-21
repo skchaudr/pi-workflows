@@ -1,6 +1,5 @@
 import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
@@ -20,6 +19,7 @@ import sanityCheckWorkflow, {
   type SanityCheckReview,
   type SanityCheckVerdict,
 } from "../src/builtins/sanity-check.workflow.js";
+import { makeTempDir } from "./helpers.js";
 
 const execFileAsync = promisify(execFile);
 const areas: SanityCheckArea[] = ["necessity", "duplication", "contracts", "scope_tests"];
@@ -270,7 +270,7 @@ describe("sanity-check workflow", () => {
   });
 
   it("collects committed and working-tree evidence with fixed Git commands", async () => {
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-sanity-evidence-"));
+    const dir = await makeTempDir("pi-sanity-evidence");
     try {
       await execFileAsync("git", ["init", "-q"], { cwd: dir });
       await execFileAsync("git", ["config", "user.name", "Test User"], { cwd: dir });
