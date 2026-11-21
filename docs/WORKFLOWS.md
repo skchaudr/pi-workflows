@@ -276,6 +276,52 @@ function can use prepared outputs to select a policy for this run. It has 30
 seconds to return. Computed timeout functions are runtime code, so definition
 snapshots omit them. Snapshots keep fixed numbers and fixed `null` values.
 
+### Running a step on another agent: `agent` and `model`
+
+An agent step can name the [acpx](https://github.com/openclaw/acpx) agent that runs it:
+
+```typescript
+agent({
+  prompt: ({ outputs }) => `Review this plan: ${JSON.stringify(outputs.plan)}`,
+  expectedOutput: `{ "verdict": "clean" | "issues_found" }`,
+  agent: "claude", // an acpx agent name
+  model: "sonnet", // optional; selected on that agent before the step runs
+});
+```
+
+- **No `agent`:** the step runs exactly as before, on the run's own Pi: the origin Pi session in
+  an interactive run, a headless `pi --mode rpc` child otherwise. `model` is not a way to pick a Pi
+  model.
+- **With `agent`:** the step runs on that agent through acpx, in interactive and headless runs
+  alike, and the other steps of the run keep their executor. The agent gets the same prompt and
+  step contract, and hands in its result through an MCP tool named `workflow` with the same input
+  as the Pi `workflow` tool (`submit`, `update`). A rejected submission, including a failed
+  `validate`, comes back to the agent as the tool result so it can correct itself. If a turn ends
+  without a submission, the executor sends the same bounded reminders (two) and then fails the step
+  with an error naming the step and the agent. Without `model`, the agent's own default model runs.
+- **Agent names that work:** `grok-build` (Grok, `grok agent stdio`) and `claude` (Claude through
+  `claude-agent-acp`). Both are proven with live runs, and the agent's own CLI must be installed
+  and signed in on the machine that runs the workflow. `model` must be a model the agent offers;
+  an agent that does not offer it fails the step with its own error.
+- **Rejected when the workflow loads:** `agent: "pi"`, because acpx's Pi agent cannot receive the
+  `workflow` tool; omit `agent` for Pi steps. `model` without `agent`. An empty `agent` or `model`.
+  `agent` together with `allowedTools` (acpx cannot restrict an agent's own tools, so the
+  restriction would be dropped silently) or with `assistantMessage()` (the response must come from
+  an origin Pi session). Each error names the step and the feature.
+- **Permissions:** nobody can answer a permission prompt in a headless step, so the agent runs
+  with every permission approved. Give an `agent` step only work you would let that agent do
+  unattended.
+- **Cancel, pause and time limits:** cancelling or stopping a run cancels the running step's turn,
+  shuts its agent down and ends any agent process still alive, then the runner exits. The server also
+  records each agent process, so it ends one if the runner dies first. The node's `timeoutMs`
+  aborts the step the same way. Steps without `agent` behave as before. An interactive run does not
+  park at an `agent` step: the runner stays up while the agent works, and a restarted runner starts
+  that step again with a fresh agent session.
+- **State:** acpx session records for a run live in the workflow server's state folder, under
+  `acpx/<runId>`, never in the user's own acpx folder.
+- `agent` and `model` stay in composed child graphs and definition snapshots, so changing them
+  needs a new run under the fixed-definition rule.
+
 ### Terminal recovery and fresh restarts
 
 Terminal messages return responsibility to the regular Pi model after execution

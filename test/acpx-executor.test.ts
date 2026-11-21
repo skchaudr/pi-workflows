@@ -441,6 +441,56 @@ describe("AcpxStepExecutor", () => {
       expect(stray!.exitCode !== null || stray!.signalCode !== null).toBe(true),
     );
   });
+
+  it("tells the process registry about each agent process, and unregisters a killed straggler", async () => {
+    const calls: string[] = [];
+    const registry = {
+      register: (pid: number) => void calls.push(`register ${pid}`),
+      unregister: (pid: number) => void calls.push(`unregister ${pid}`),
+    };
+    let stray: ChildProcess | undefined;
+    const { executor, factory } = await setup(
+      [
+        async (call) => {
+          const lifecycle = factory.mock.calls[0]![0].processLifecycle;
+          stray = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+            stdio: "ignore",
+          });
+          await lifecycle.onSpawned!({ pid: stray.pid! } as never);
+          await call(submit(1));
+        },
+      ],
+      { abortGraceMs: 100, registry },
+    );
+    await executor.runAgentStep(makeRequest(), new AbortController().signal);
+    expect(calls).toEqual([`register ${stray!.pid}`, `unregister ${stray!.pid}`]);
+  });
+
+  it("fails the step when the registry refuses an agent process", async () => {
+    const registry = {
+      register: () => Promise.reject(new Error("Runner process is not a direct child")),
+      unregister: () => undefined,
+    };
+    let stray: ChildProcess | undefined;
+    const { executor, factory } = await setup(
+      [
+        async () => {
+          stray = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+            stdio: "ignore",
+          });
+          await factory.mock.calls[0]![0].processLifecycle.onSpawned!({ pid: stray.pid! } as never);
+          await hang(() => Promise.resolve({ text: "", isError: false }));
+        },
+      ],
+      { abortGraceMs: 100, registry },
+    );
+    await expect(
+      executor.runAgentStep(makeRequest(), new AbortController().signal),
+    ).rejects.toThrow("Runner process is not a direct child");
+    await vi.waitFor(() =>
+      expect(stray!.exitCode !== null || stray!.signalCode !== null).toBe(true),
+    );
+  });
 });
 
 describe("acpx submission channel and MCP script", () => {

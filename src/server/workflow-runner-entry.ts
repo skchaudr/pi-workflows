@@ -22,7 +22,12 @@ import type {
   WorkflowMountedSource,
   WorkflowSource,
 } from "../workflows/types.js";
-import { RpcStepExecutor } from "./rpc-executor.js";
+import {
+  acpxExecutorFactory,
+  acpxRunStateDir,
+  AgentRoutingExecutor,
+} from "./agent-routing-executor.js";
+import { RpcStepExecutor, type SupervisedProcessRegistry } from "./rpc-executor.js";
 import type { WorkflowRunnerLaunchEnvelope } from "./state.js";
 import { materializeRunnerContent } from "./workflow-runner-content.js";
 import {
@@ -259,6 +264,23 @@ class InteractiveExecutor implements AgentStepExecutor {
   }
 }
 
+/** Lets the server reap a process this runner starts if the runner dies before it can. */
+function runnerProcessRegistry(transport: StdioRunnerTransport): SupervisedProcessRegistry {
+  const send = async (operation: "process.register" | "process.unregister", pid: number) => {
+    await transport.request({
+      messageId: randomUUID(),
+      operation,
+      kind: "runner.progress",
+      expectedRevision: 0,
+      payload: { pid },
+    });
+  };
+  return {
+    register: async (pid) => await send("process.register", pid),
+    unregister: async (pid) => await send("process.unregister", pid),
+  };
+}
+
 function interactionSubmission(payload: JsonValue): AgentStepSubmission {
   if (
     typeof payload === "object" &&
@@ -359,52 +381,61 @@ export async function runWorkflowRunner(): Promise<number> {
       return 1;
     }
     const store = new ServerBackedWorkflowStore(launch.runId, transport, ready.revision ?? 0);
-    let executor: AgentStepExecutor;
-    let closeExecutor: (() => Promise<void>) | undefined;
+    let runExecutor: AgentStepExecutor;
+    let closeRunExecutor: (() => Promise<void>) | undefined;
+    const registry = runnerProcessRegistry(transport);
     if (bootstrap.originSessionId !== null) {
-      executor = new InteractiveExecutor(store, bootstrap.candidateInteraction);
+      runExecutor = new InteractiveExecutor(store, bootstrap.candidateInteraction);
     } else {
       const rpc = new RpcStepExecutor({
         cwd: launch.projectPath,
         processGroup: "own",
         abortGraceMs: 1_000,
-        registry: {
-          register: async (pid) => {
-            await transport.request({
-              messageId: randomUUID(),
-              operation: "process.register",
-              kind: "runner.progress",
-              expectedRevision: 0,
-              payload: { pid },
-            });
-          },
-          unregister: async (pid) => {
-            await transport.request({
-              messageId: randomUUID(),
-              operation: "process.unregister",
-              kind: "runner.progress",
-              expectedRevision: 0,
-              payload: { pid },
-            });
-          },
-        },
+        registry,
         ...(bootstrap.piArgs === undefined ? {} : { piArgs: bootstrap.piArgs }),
       });
-      const closeRpc = async () => await rpc.close();
-      const onShutdown = () => {
-        void closeRpc().catch((error: unknown) => {
-          process.stderr.write(`Headless pi shutdown failed: ${errorMessage(error)}\n`);
-        });
-      };
-      process.on("SIGTERM", onShutdown);
-      process.on("SIGINT", onShutdown);
-      executor = rpc;
-      closeExecutor = async () => {
-        process.removeListener("SIGTERM", onShutdown);
-        process.removeListener("SIGINT", onShutdown);
-        await closeRpc();
-      };
+      runExecutor = rpc;
+      closeRunExecutor = async () => await rpc.close();
     }
+    // A step that names an acpx `agent` runs there; every other step runs on the run's own executor.
+    const routing = new AgentRoutingExecutor(
+      runExecutor,
+      acpxExecutorFactory({
+        cwd: launch.projectPath,
+        stateDir: acpxRunStateDir(bootstrap.stateDirectory, launch.runId),
+        abortGraceMs: 1_000,
+        registry,
+      }),
+    );
+    const executor: AgentStepExecutor = routing;
+    const closeAll = async () => {
+      await routing.close();
+      await closeRunExecutor?.();
+    };
+    // The server stops a cancelled run by sending SIGTERM to this runner. Cancel the running acpx
+    // step and stop the headless Pi child before exiting, so neither leaves a process behind.
+    const onShutdown = () => {
+      void closeAll()
+        .catch((error: unknown) => {
+          process.stderr.write(`Runner shutdown failed: ${errorMessage(error)}\n`);
+        })
+        .finally(() => {
+          if (closeRunExecutor !== undefined) return;
+          // An interactive run has no Pi child whose exit would end the runner: stop here.
+          removeShutdownHandlers();
+          process.kill(process.pid, "SIGTERM");
+        });
+    };
+    const removeShutdownHandlers = () => {
+      process.removeListener("SIGTERM", onShutdown);
+      process.removeListener("SIGINT", onShutdown);
+    };
+    process.on("SIGTERM", onShutdown);
+    process.on("SIGINT", onShutdown);
+    const closeExecutor = async () => {
+      removeShutdownHandlers();
+      await closeAll();
+    };
     const engine = new WorkflowEngine({
       store,
       executor,

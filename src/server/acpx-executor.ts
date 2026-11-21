@@ -25,6 +25,7 @@ import {
   type ChannelCall,
 } from "./acpx-submission-channel.js";
 import { MAX_SUBMISSION_REMINDERS } from "./recovery.js";
+import type { SupervisedProcessRegistry } from "./rpc-executor.js";
 
 // Production resolves the compiled .js; tests and dev checkouts run the .ts source, which node
 // type-strips (the script imports nothing from the package).
@@ -70,6 +71,11 @@ export type AcpxStepExecutorOptions = {
   stateDir: string;
   /** How long cancel and shutdown may take before leftover agent processes get SIGKILL. */
   abortGraceMs?: number;
+  /**
+   * Told about every agent process the step starts and ends, so a server can reap a process whose
+   * runner died before it could.
+   */
+  registry?: SupervisedProcessRegistry;
   runtimeFactory?: AcpxRuntimeFactory;
 };
 
@@ -118,6 +124,7 @@ export class AcpxStepExecutor implements AgentStepExecutor {
 class AcpxStep {
   private readonly graceMs: number;
   private readonly agentPids = new Set<number>();
+  private registrations: Promise<unknown> = Promise.resolve();
   private accepted: { value: unknown } | undefined;
   private failure: unknown;
   private settle: () => void = () => undefined;
@@ -196,12 +203,31 @@ class AcpxStep {
         },
       ],
       processLifecycle: {
-        onSpawned: (started) => void this.agentPids.add(started.pid),
-        onExit: (exit) => void this.agentPids.delete(exit.pid),
+        onSpawned: (started) => {
+          this.agentPids.add(started.pid);
+          this.tellRegistry("register", started.pid);
+        },
+        onExit: (exit) => {
+          this.agentPids.delete(exit.pid);
+          this.tellRegistry("unregister", exit.pid);
+        },
       },
     });
     this.runtime = runtime;
     return runtime;
+  }
+
+  /** Registry calls run one after another; a failed one fails the step, as it does for the Pi executor. */
+  private tellRegistry(operation: "register" | "unregister", pid: number): void {
+    const registry = this.options.registry;
+    if (registry === undefined) return;
+    this.registrations = this.registrations
+      .then(() => registry[operation](pid))
+      .catch((error: unknown) => {
+        if (operation === "unregister") return;
+        this.failure ??= error;
+        this.settle();
+      });
   }
 
   /** Run one turn; resolves with the accepted submission, or undefined when the turn ended without one. */
@@ -344,6 +370,7 @@ class AcpxStep {
     try {
       if (this.runtime !== undefined) await settleWithin(this.runtime.shutdown(), this.graceMs);
       await this.reapAgents();
+      await this.registrations;
     } finally {
       await channel.close();
     }
@@ -352,7 +379,10 @@ class AcpxStep {
   private async reapAgents(): Promise<void> {
     const deadline = Date.now() + this.graceMs;
     while (this.agentPids.size > 0 && Date.now() < deadline) await sleep(25);
-    for (const pid of this.agentPids) killQuietly(pid);
+    for (const pid of this.agentPids) {
+      killQuietly(pid);
+      this.tellRegistry("unregister", pid);
+    }
     this.agentPids.clear();
   }
 }
