@@ -6,14 +6,14 @@ Sab's definition of done: "write a pi workflow, have it run through Grok build, 
 
 ## Where things are
 
-| | Path | State |
-|---|---|---|
-| grok-build acpx work | `/Volumes/Mini-SSD/offload/repos/grok-build-acpx`, branch `acpx-tui-slices` | pushed through `0e750703`; that commit is what is installed. `inspector.rs` has an uncommitted change in progress (agent C, below) |
-| Installed build | `~/.grok/bin/{grok-fork,grok-traces,grok-pi-acp,grok-acpx-acp}` here and on sab-air | installed 2026-11-21 05:26 with `scripts/install-fork.sh`; four checksums matched on both machines |
-| Previous binaries | `~/.grok/bin/{grok-fork,grok-traces,grok-pi-acp}.before-acpx-20261121`, both machines | kept so the old build can be put back |
-| pi-workflows | `~/repos/pi-workflows`, branch `acpx-executor` (from main `10935d7`) | pushed through `b706ec2`; agent S (below) has uncommitted work on top |
-| Not mine, uncommitted in pi-workflows | `scripts/live-e2e.mjs`, `scripts/live-e2e.d.mts`, `test/live-e2e-script.test.ts` | an earlier agent's unproven fix for the live E2E script; left alone, not staged |
-| Demo flows | `/tmp/acpx-demo/{ship,fix,land}.flow.ts`, `input.json` | unchanged |
+|                                       | Path                                                                                  | State                                                                                                                              |
+| ------------------------------------- | ------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| grok-build acpx work                  | `/Volumes/Mini-SSD/offload/repos/grok-build-acpx`, branch `acpx-tui-slices`           | pushed through `0e750703`; that commit is what is installed. `inspector.rs` has an uncommitted change in progress (agent C, below) |
+| Installed build                       | `~/.grok/bin/{grok-fork,grok-traces,grok-pi-acp,grok-acpx-acp}` here and on sab-air   | installed 2026-11-21 05:26 with `scripts/install-fork.sh`; four checksums matched on both machines                                 |
+| Previous binaries                     | `~/.grok/bin/{grok-fork,grok-traces,grok-pi-acp}.before-acpx-20261121`, both machines | kept so the old build can be put back                                                                                              |
+| pi-workflows                          | `~/repos/pi-workflows`, branch `acpx-executor` (from main `10935d7`)                  | pushed through `b706ec2`; agent S (below) has uncommitted work on top                                                              |
+| Not mine, uncommitted in pi-workflows | `scripts/live-e2e.mjs`, `scripts/live-e2e.d.mts`, `test/live-e2e-script.test.ts`      | an earlier agent's unproven fix for the live E2E script; left alone, not staged                                                    |
+| Demo flows                            | `/tmp/acpx-demo/{ship,fix,land}.flow.ts`, `input.json`                                | unchanged                                                                                                                          |
 
 Run acpx mode with the installed build:
 
