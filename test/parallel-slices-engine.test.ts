@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -10,12 +10,12 @@ const flags = [
   "test/model",
   "--effort",
   "low",
-  "--rates",
-  "2,10",
   "--expect-out",
   "15000",
   "--baseline",
   "0.17",
+  "--rates",
+  "2,10",
 ];
 
 let dir = "";
@@ -64,15 +64,65 @@ describe("parallel-slices engine", () => {
   });
 
   it("refuses to send above twice the baseline without an approved multiple", async () => {
-    const pricey = [...flags.slice(0, 5), "3,15", "--expect-out", "56000", "--baseline", "0.17"];
+    const pricey = [
+      ...flags.slice(0, 4),
+      "--expect-out",
+      "56000",
+      "--baseline",
+      "0.17",
+      "--rates",
+      "3,15",
+    ];
     const result = run([await tasksFile("r:big.ts#L1-100"), ...pricey]);
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("the user must approve that multiple");
   });
 
-  it("requires the thinking level, rates, expected output and baseline", async () => {
+  it("requires the thinking level, expected output and baseline", async () => {
     const result = run([await tasksFile("r:big.ts#L1-100"), "--model", "test/model", "--dry-run"]);
     expect(result.status).toBe(2);
-    expect(result.stderr).toContain("--effort, --rates, --expect-out, --baseline");
+    expect(result.stderr).toContain("--effort, --expect-out, --baseline");
+  });
+
+  it("prints each context entry with its bytes and the batch line", async () => {
+    const result = run([await tasksFile("r:big.ts#L1-100"), ...flags, "--dry-run"]);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toMatch(/big\.ts lines 1-100: 1,499 bytes, ~374 tokens/);
+    expect(result.stdout).toMatch(/rates \$2 in \/ \$10 out per million tokens from --rates/);
+    expect(result.stdout).toMatch(
+      /batch: 1 slice\(s\), ~\d+ tokens in, est \$[\d.]+, baseline \$0\.17, worst [\d.]+x, model test\/model, effort low, max_tokens 64000/,
+    );
+  });
+
+  it("refuses a non-openrouter endpoint without rates", async () => {
+    const noRates = flags.slice(0, -2);
+    const result = run([
+      await tasksFile("r:big.ts#L1-100"),
+      ...noRates,
+      "--endpoint",
+      "http://localhost:1/v1",
+      "--dry-run",
+    ]);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("pass --rates IN,OUT");
+  });
+
+  it("cancels in the countdown on Ctrl-C with exit 130 and nothing sent", async () => {
+    const file = await tasksFile("r:big.ts#L1-100");
+    const child = spawn("python3", [engine, file, ...flags, "--accept-multiple", "10"], {
+      env: { ...process.env, OPENROUTER_API_KEY: "dummy" },
+    });
+    let stdout = "";
+    const exited = new Promise<number | null>((resolve) => child.on("close", resolve));
+    await new Promise<void>((resolve) => {
+      child.stdout.on("data", (chunk: Buffer) => {
+        stdout += chunk.toString();
+        if (stdout.includes("sending 1 slice in")) resolve();
+      });
+    });
+    child.kill("SIGINT");
+    expect(await exited).toBe(130);
+    expect(stdout).toContain("cancelled, nothing sent");
+    await expect(fs.stat(path.join(dir, "tasks_out", "_returns"))).rejects.toThrow();
   });
 });

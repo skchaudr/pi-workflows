@@ -16,7 +16,7 @@ Every cheap run followed these. Breaking one is the user's decision, raised befo
 2. **One engine.** Send with `scripts/slices.py` in this skill's folder. Write a tasks file that holds only `REPOS`, `TASKS` and optionally `SYSTEM`. Do not copy, patch or replace the engine. If it lacks something, change the engine itself in the pi-workflows repository, in its own commit, and tell the user.
 3. **Excerpts, not whole files.** The engine refuses any context entry over 32 KB. Cut a large file to the lines the slice calls with `path#Lstart-end` and summarize the rest in the prompt. Past input was 4k–17k tokens per slice. Above twice the baseline's largest slice, get the user's OK.
 4. **Set thinking explicitly.** `--effort` is required. Use `low` for a model that bills reasoning as output unless the user chose otherwise; thinking shares `--max-tokens` with the returned file.
-5. **Estimate from real returns.** `--expect-out` is the ledger's returned size for comparable slices plus a thinking allowance. `--rates` is the provider's current price; say where and when you read it.
+5. **Estimate from real returns.** `--expect-out` is the ledger's returned size for comparable slices plus a thinking allowance. Rates come live from OpenRouter's model list and the engine prints them with the time; pass `--rates IN,OUT` only to override them or for another endpoint.
 6. **Compare before sending.** `--baseline` is the ledger's cost per slice. Show the user the dry run's per-slice multiples and batch total, and name the causes of any multiple above 2x: price, input, thinking, output size. The engine refuses to send above 2x; pass `--accept-multiple` only with the number the user approved.
 7. **Pilot when the setup changes.** If the model, runner, context policy or thinking level differs from the baseline, send one slice first. Read its usage (tokens in, out, reasoning, cost, finish reason) before sending the rest.
 8. **Record the bill.** Save each return's provider usage as `<id>.usage.json`. After review, add the run to the ledger.
@@ -45,10 +45,10 @@ An independent reviewer, in a tab the user can watch, checks the prompts with [t
 ## Dispatch
 
 ```bash
-python3 <skill>/scripts/slices.py TASKS.py --model <id> --effort low --rates <in>,<out> --expect-out <tokens> --baseline <usd> --dry-run
+python3 <skill>/scripts/slices.py TASKS.py --model <id> --effort low --expect-out <tokens> --baseline <usd> --dry-run
 ```
 
-Drop `--dry-run` to send; add `--only <ids>` for a pilot, retry or follow-up slice. The engine sends each slice as one completion request with no tools (Omit tools and tool execution entirely), prints the endpoint and model but never the key, retries transient errors a bounded number of times, stages returns in `<tasks>_out/` with the raw text and `<id>.usage.json`, prints a line per send and return plus a waiting line every 20 seconds, treats empty, cut-off and incomplete returns as failures, and exits nonzero if any slice failed. It never executes generated output. Send only context permitted for that service and no secrets. Match `SYSTEM` to the return format. A timed-out request may still be billed.
+Drop `--dry-run` to send. The engine prints the cost screen (each context entry's bytes, tokens in, estimate, multiple of the baseline) and counts down 30 s before the first request; read it and stop it with Ctrl-C if the numbers are off. Add `--only <ids>` for a pilot, retry or follow-up slice. The engine sends each slice as one completion request with no tools (Omit tools and tool execution entirely), prints the endpoint and model but never the key, retries transient errors a bounded number of times, stages returns in `<tasks>_out/` with the raw text and `<id>.usage.json`, prints a line per send and return plus a waiting line every 20 seconds, treats empty, cut-off and incomplete returns as failures, and exits nonzero if any slice failed. It never executes generated output. Send only context permitted for that service and no secrets. Match `SYSTEM` to the return format. A timed-out request may still be billed.
 
 Read every dry-run prompt in `<tasks>_out/_prompts/`, not just the sizes. Run the engine in a named tab the user can watch (for example a Rex tab), tell them its name, and leave it open. Do not pipe its output through anything that holds it until exit.
 
