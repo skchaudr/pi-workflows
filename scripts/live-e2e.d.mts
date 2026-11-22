@@ -31,6 +31,12 @@ export function assertPackageIsolation(
   rpc: { request(command: string): Promise<unknown> },
   candidate: string,
 ): Promise<void>;
+export function liveE2eTempBase(): string;
+export function cargoBuildEnvironment(parent?: Record<string, string | undefined>): {
+  HOME: string | undefined;
+  TMPDIR: string | undefined;
+  XDG_CACHE_HOME: string | undefined;
+};
 export function assertSafeTempRoot(root: string, temporaryDirectory?: string): string;
 export function removeTemporaryRoot(root: string, temporaryDirectory?: string): Promise<void>;
 export function withTemporaryRoot<T>(

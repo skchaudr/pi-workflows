@@ -7,8 +7,10 @@ import { describe, expect, it } from "vitest";
 import {
   assertPackageIsolation,
   assertSafeTempRoot,
+  cargoBuildEnvironment,
   configureModelBudget,
   isExpectedWorkflowAbort,
+  liveE2eTempBase,
   parseArgs,
   RpcSession,
   withTemporaryRoot,
@@ -236,6 +238,27 @@ describe("installed live E2E script", () => {
     expect(assertSafeTempRoot("/tmp/pi-workflows-live-e2e-example", "/tmp")).toBe(
       "/tmp/pi-workflows-live-e2e-example",
     );
+  });
+
+  it("roots the default temporary directory at a resolved short base", async () => {
+    const base = liveE2eTempBase();
+    expect(base).toBe(await fs.realpath(base));
+    if (process.platform === "darwin") expect(base).toBe(await fs.realpath("/tmp"));
+    await withTemporaryRoot(async (root) => {
+      expect(path.dirname(root)).toBe(base);
+      expect(assertSafeTempRoot(root)).toBe(root);
+    });
+  });
+
+  it("builds with the caller's directories so a shared sccache server never keeps the run's", () => {
+    expect(
+      cargoBuildEnvironment({ HOME: "/home/op", TMPDIR: "/tmp/op/", XDG_CACHE_HOME: "/cache/op" }),
+    ).toEqual({ HOME: "/home/op", TMPDIR: "/tmp/op/", XDG_CACHE_HOME: "/cache/op" });
+    expect(cargoBuildEnvironment({})).toEqual({
+      HOME: undefined,
+      TMPDIR: undefined,
+      XDG_CACHE_HOME: undefined,
+    });
   });
 
   it("reports an unexpected Pi RPC exit immediately", async () => {

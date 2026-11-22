@@ -2,6 +2,7 @@
 
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { realpathSync } from "node:fs";
 import fs from "node:fs/promises";
 import http from "node:http";
 import net from "node:net";
@@ -101,7 +102,18 @@ export async function configureModelBudget(profile, options) {
   );
 }
 
-export function assertSafeTempRoot(root, temporaryDirectory = os.tmpdir()) {
+/**
+ * The workflow server binds a socket inside the temporary root, and macOS allows
+ * 103 bytes for that path. The per-user temporary directory under `/var/folders`
+ * uses about 48 of them, so macOS roots under `/tmp`. The base is resolved
+ * because `/tmp` is a symbolic link there and the safety checks compare resolved
+ * paths.
+ */
+export function liveE2eTempBase() {
+  return realpathSync(process.platform === "darwin" ? "/tmp" : os.tmpdir());
+}
+
+export function assertSafeTempRoot(root, temporaryDirectory = liveE2eTempBase()) {
   const resolvedRoot = path.resolve(root);
   const resolvedTemporaryDirectory = path.resolve(temporaryDirectory);
   if (
@@ -113,7 +125,7 @@ export function assertSafeTempRoot(root, temporaryDirectory = os.tmpdir()) {
   return resolvedRoot;
 }
 
-export async function removeTemporaryRoot(root, temporaryDirectory = os.tmpdir()) {
+export async function removeTemporaryRoot(root, temporaryDirectory = liveE2eTempBase()) {
   const safeRoot = assertSafeTempRoot(root, temporaryDirectory);
   const stat = await fs.lstat(safeRoot);
   if (!stat.isDirectory() || stat.isSymbolicLink()) {
@@ -123,7 +135,7 @@ export async function removeTemporaryRoot(root, temporaryDirectory = os.tmpdir()
 }
 
 export async function withTemporaryRoot(operation, options = {}) {
-  const temporaryDirectory = path.resolve(options.temporaryDirectory ?? os.tmpdir());
+  const temporaryDirectory = path.resolve(options.temporaryDirectory ?? liveE2eTempBase());
   const root = await fs.mkdtemp(path.join(temporaryDirectory, TEMP_PREFIX));
   try {
     return await operation(root);
@@ -556,6 +568,21 @@ async function installCandidate(context) {
   return candidate;
 }
 
+/**
+ * Cargo here goes through the operator's `sccache`, a server that outlives the
+ * run and keeps the environment of the process that started it. Building with
+ * the run's isolated temporary, home, and cache directories would leave that
+ * server pointing at directories this script deletes, and every later build on
+ * the machine would fail. The build only compiles, so it keeps the caller's.
+ */
+export function cargoBuildEnvironment(parent = process.env) {
+  return {
+    HOME: parent.HOME,
+    TMPDIR: parent.TMPDIR,
+    XDG_CACHE_HOME: parent.XDG_CACHE_HOME,
+  };
+}
+
 async function buildPiw(context) {
   stage("installing the piw candidate");
   await runProcess(
@@ -569,7 +596,10 @@ async function buildPiw(context) {
       "--locked",
       "--force",
     ],
-    context.processOptions(REPO_ROOT, { CARGO_TARGET_DIR: context.cargoTarget }),
+    context.processOptions(REPO_ROOT, {
+      ...cargoBuildEnvironment(),
+      CARGO_TARGET_DIR: context.cargoTarget,
+    }),
   );
   const binary = path.join(
     context.piwRoot,
