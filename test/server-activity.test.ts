@@ -324,4 +324,194 @@ describe("live step activity over the client protocol", () => {
       await server.stop();
     }
   }, 120_000);
+
+  it("serves a finished run's complete activity to a late watcher, before and after a server restart", async () => {
+    const cwd = await makeTempDir("activity-finished-project");
+    const stateRoot = await makeTempDir("activity-finished-state");
+    const control = await makeTempDir("activity-finished-control");
+    const databasePath = path.join(stateRoot, "state.sqlite");
+    const workflowPath = await writeDemoWorkflow(cwd);
+    const runnerPath = path.join(control, "fake-activity-runner.mjs");
+    const scriptPath = path.join(control, "script.json");
+    await fs.writeFile(runnerPath, FAKE_ACTIVITY_RUNNER);
+
+    const finishedRunId = "activity-finished-run";
+    // The runner publishes three records, then parks on a trigger file until
+    // the server cancels the run: a real terminal state through the server's
+    // own path, after which its live listeners are dropped.
+    const script: RunnerScriptStep[] = [
+      {
+        activity: [
+          {
+            nodeId: "work",
+            attemptId: "att-1",
+            bodies: [
+              { kind: "text", text: "first chunk" },
+              { kind: "status", text: "still working" },
+            ],
+          },
+          {
+            nodeId: "work",
+            attemptId: "att-1",
+            bodies: [
+              {
+                kind: "tool",
+                text: "Read README.md",
+                tool: { toolCallId: "call-1", title: "Read", status: "completed", kind: "read" },
+              },
+            ],
+          },
+        ],
+      },
+      { waitFile: path.join(control, "never") },
+    ];
+    await fs.writeFile(scriptPath, JSON.stringify(script));
+
+    const server = new WorkflowServer({
+      databasePath,
+      claimPollMs: 10,
+      runnerEntryPath: runnerPath,
+      env: { FAKE_ACTIVITY_SCRIPT: scriptPath },
+    });
+    const client = new WorkflowClient({ databasePath });
+    await server.start();
+    const expectedTool = { toolCallId: "call-1", title: "Read", status: "completed", kind: "read" };
+    const expected = [
+      { seq: 1, kind: "text", text: "first chunk" },
+      { seq: 2, kind: "status", text: "still working" },
+      { seq: 3, kind: "tool", text: "Read README.md" },
+    ];
+    const seqsOf = (events: ActivityEvent[]): number[] =>
+      events.flatMap((event) => event.activities.map((activity) => activity.seq));
+    try {
+      const resolved = await client.resolveWorkflow({ cwd, workflowRef: workflowPath });
+      const started = await client.request({
+        operation: "run.start",
+        runId: finishedRunId,
+        payload: {
+          projectPath: cwd,
+          workflowName: resolved.workflowName,
+          workflowSourceRef: resolved.workflowSourceRef,
+          workflowSource: resolved.workflowSource,
+          definitionDigest: resolved.definitionDigest,
+          definitionSnapshot: resolved.definitionSnapshot,
+          input: { value: 1 },
+          launchOptions: {},
+          originSessionId: "activity-finished-session",
+          executionMode: "headless",
+        },
+      });
+      expect(started.outcome).toBe("accepted");
+
+      // A live watcher still receives the records as they arrive.
+      const live: ActivityEvent[] = [];
+      const stopLive = await client.watchRunActivity(finishedRunId, collectActivity(live), {
+        subscriptionId: "activity-finished-live",
+      });
+      try {
+        await waitUntil(() => seqsOf(live).length >= 3, 30_000);
+        expect(seqsOf(live)).toEqual([1, 2, 3]);
+        for (const event of live) expect(event.reset).toBe(false);
+      } finally {
+        await stopLive();
+      }
+
+      // Cancel the run: a real final state, after which the run's live step
+      // activity listeners are dropped but the records stay durable.
+      const cancelled = await client.request({
+        operation: "run.cancel",
+        runId: finishedRunId,
+        payload: { targetSessionId: "activity-finished-session" },
+      });
+      expect(cancelled.outcome).toBe("accepted");
+      const awaitTerminal = async (): Promise<void> => {
+        const deadline = Date.now() + 30_000;
+        for (;;) {
+          const view = await client.getRun(finishedRunId);
+          if (view !== null && ["done", "failed", "cancelled"].includes(view.queue.status)) return;
+          if (Date.now() > deadline) throw new Error("run did not reach a final state in time");
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        }
+      };
+      await awaitTerminal();
+
+      // A client that starts watching only now receives the complete activity.
+      const afterFinish: ActivityEvent[] = [];
+      const stopAfterFinish = await client.watchRunActivity(
+        finishedRunId,
+        collectActivity(afterFinish),
+        { subscriptionId: "activity-finished-all", afterSeq: 0 },
+      );
+      try {
+        await waitUntil(() => seqsOf(afterFinish).length >= 3, 15_000);
+        expect(seqsOf(afterFinish)).toEqual([1, 2, 3]);
+        for (const event of afterFinish) expect(event.reset).toBe(false);
+        const flat = afterFinish.flatMap((event) => event.activities);
+        expect(flat.map(({ seq, kind, text }) => ({ seq, kind, text }))).toEqual(expected);
+        expect(flat[2]?.tool).toEqual(expectedTool);
+      } finally {
+        await stopAfterFinish();
+      }
+
+      // A resume point inside the finished run works the same way.
+      const tail: ActivityEvent[] = [];
+      const stopTail = await client.watchRunActivity(finishedRunId, collectActivity(tail), {
+        subscriptionId: "activity-finished-tail",
+        afterSeq: 1,
+      });
+      try {
+        await waitUntil(() => seqsOf(tail).length >= 2, 15_000);
+        expect(seqsOf(tail)).toEqual([2, 3]);
+        for (const event of tail) expect(event.reset).toBe(false);
+      } finally {
+        await stopTail();
+      }
+    } finally {
+      await client.close();
+      await server.stop();
+    }
+
+    // A simulated restart: a fresh server and client on the same database
+    // still serve the finished run's complete activity, in seq order.
+    const restarted = new WorkflowServer({ databasePath, claimPollMs: 60_000 });
+    const restartClient = new WorkflowClient({ databasePath });
+    await restarted.start();
+    try {
+      const afterRestart: ActivityEvent[] = [];
+      const stopAfterRestart = await restartClient.watchRunActivity(
+        finishedRunId,
+        collectActivity(afterRestart),
+        { subscriptionId: "activity-restart-all", afterSeq: 0 },
+      );
+      try {
+        await waitUntil(() => seqsOf(afterRestart).length >= 3, 15_000);
+        expect(seqsOf(afterRestart)).toEqual([1, 2, 3]);
+        for (const event of afterRestart) expect(event.reset).toBe(false);
+        const flat = afterRestart.flatMap((event) => event.activities);
+        expect(flat.map(({ seq, kind, text }) => ({ seq, kind, text }))).toEqual(expected);
+        expect(flat[2]?.tool).toEqual(expectedTool);
+
+        // The numbering continues from the durable records: a resumed watch
+        // inside the history needs no reset.
+        const resume: ActivityEvent[] = [];
+        const stopResume = await restartClient.watchRunActivity(
+          finishedRunId,
+          collectActivity(resume),
+          { subscriptionId: "activity-restart-resume", afterSeq: 2 },
+        );
+        try {
+          await waitUntil(() => seqsOf(resume).length >= 1, 15_000);
+          expect(seqsOf(resume)).toEqual([3]);
+          for (const event of resume) expect(event.reset).toBe(false);
+        } finally {
+          await stopResume();
+        }
+      } finally {
+        await stopAfterRestart();
+      }
+    } finally {
+      await restartClient.close();
+      await restarted.stop();
+    }
+  }, 90_000);
 });

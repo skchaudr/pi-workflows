@@ -904,10 +904,13 @@ One unfinished interactive run reserves its origin Pi session, including while w
 
 While an `agent` step runs, its executor reports live activity: chunks of the
 model's answer text, its thinking, status lines, and whole tool-call states.
-Activity is a best-effort live view. It is never persisted, never recorded in
-the runner message log, and never changes a run revision. After a server
-restart, or once a run reaches a final state, the server may remember none of
-it, and a late watcher is told so with a reset.
+Activity is a best-effort live view. It is never recorded in the runner
+message log and never changes a run revision. The numbered records are stored
+durably in the state database (`step_activities`, one row per record, removed
+with its run), so a client that begins watching after the run ended receives
+that run's complete activity in `seq` order, and the same holds after the
+server restarts. A watcher whose `afterSeq` is beyond the newest record still
+gets a reset, because the server cannot continue that numbering.
 
 The wire carries it in two steps:
 

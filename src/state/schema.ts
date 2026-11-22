@@ -800,6 +800,18 @@ CREATE TABLE channel_messages (
 ) STRICT;
 
 CREATE INDEX channel_messages_decision_idx ON channel_messages(decision_id, purpose, created_at);
+
+CREATE TABLE step_activities (
+  run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
+  seq INTEGER NOT NULL CHECK (seq > 0),
+  node_id TEXT NOT NULL,
+  attempt_id TEXT NOT NULL,
+  at TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('text', 'thought', 'tool', 'status')),
+  text TEXT NOT NULL,
+  tool TEXT,
+  PRIMARY KEY (run_id, seq)
+) STRICT;
 `;
 
 export const STATE_SCHEMA_DIGEST = createHash("sha256").update(STATE_SCHEMA_SQL).digest();

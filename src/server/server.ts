@@ -277,8 +277,8 @@ export class WorkflowServer {
   private readonly views: ServerViewStore;
   private readonly registry: ServerProcessRegistry;
   private readonly activeRuns = new Map<string, ActiveRun>();
-  /** One per server: numbers and fans out live step activity, in memory only. */
-  private readonly stepActivity = new StepActivityHub();
+  /** One per server: numbers, records durably and fans out live step activity. */
+  private readonly stepActivity: StepActivityHub;
   private readonly runnerDescendants = new Map<string, Set<number>>();
   private readonly activeResourceManagers = new Map<string, ActiveResourceManager>();
   private readonly activeChannels = new Map<string, ActiveChannel>();
@@ -331,6 +331,7 @@ export class WorkflowServer {
     this.lockPath = path.join(this.stateDirectory, "server.lock.json");
     this.state = new StateDatabase({ filePath: this.databasePath });
     this.serverState = new ServerStateStore(this.databasePath, { state: this.state });
+    this.stepActivity = new StepActivityHub({ store: this.serverState });
     this.recovery = new WorkflowRecovery(this.state);
     this.queue = new WorkflowRunQueueStore(this.databasePath, {
       state: this.state,
@@ -4350,9 +4351,10 @@ export class WorkflowServer {
     ) {
       return runnerResponse(message, "claimLost", undefined, "Runner epoch is stale");
     }
-    // Live activity is a side channel: it is never recorded, never replayed, and
-    // never revision-checked, so it must leave this path before the durable
-    // read and the recording below.
+    // Live activity is a side channel: it is not deduplicated and never
+    // revision-checked, so it must leave this path before the durable read and
+    // the recording below. The activity hub still records the numbered records
+    // durably, so late watchers and a restarted server can replay them.
     if (message.operation === "activity.publish") {
       return this.handleRunnerActivityMessage(message);
     }
@@ -4566,7 +4568,7 @@ export class WorkflowServer {
     }
   }
 
-  /** Side-channel runner activity: validate, number and fan out; keep it out of all durable state. */
+  /** Side-channel runner activity: validate, number, record durably and fan out. */
   private handleRunnerActivityMessage(message: WorkflowRunnerMessage): WorkflowRunnerResponse {
     try {
       const payload = requireRecord(message.payload, "runner activity payload");
@@ -4926,7 +4928,8 @@ export class WorkflowServer {
         context.runId,
       );
     if (["done", "failed", "cancelled"].includes(queueStatus)) {
-      // The run reached a final state: forget its live step activity.
+      // The run reached a final state: drop its live activity listeners. The
+      // numbered records stay durable for clients that watch it afterwards.
       this.stepActivity.closeRun(context.runId);
     }
     context.database.connection

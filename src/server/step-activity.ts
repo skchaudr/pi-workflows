@@ -259,37 +259,54 @@ type RunActivityState = {
   subscriptions: Set<HubSubscription>;
 };
 
-/** Server side. One per server. Numbers, remembers and fans out activity. Holds no durable state. */
+/**
+ * Durable sink for numbered activity records. The server wires its SQLite state store, so a client
+ * that starts watching after the run ended, or after the server restarted, still receives the
+ * run's complete activity in seq order. No cap on what is kept or returned.
+ */
+export interface StepActivityRecordStore {
+  appendStepActivities(activities: StepActivity[]): void;
+  readStepActivities(runId: string, afterSeq: number): StepActivity[];
+  lastStepActivitySeq(runId: string): number;
+}
+
+/**
+ * Server side. One per server. Numbers, records and fans out activity. With a record store the
+ * numbering, reads and replays are durable; without one it holds the records in memory only.
+ */
 export class StepActivityHub {
   private readonly now: () => Date;
+  private readonly store: StepActivityRecordStore | undefined;
   private readonly runs = new Map<string, RunActivityState>();
 
-  constructor(options?: { now?: () => Date }) {
+  constructor(options?: { now?: () => Date; store?: StepActivityRecordStore }) {
     this.now = options?.now ?? (() => new Date());
+    this.store = options?.store;
   }
 
-  /** Number the bodies (seq, at, schema, key), remember them, hand them to the run's listeners, return them. */
+  /** Number the bodies (seq, at, schema, key), record them, hand them to the run's listeners, return them. */
   publish(key: StepActivityKey, bodies: StepActivityBody[]): StepActivity[] {
     if (bodies.length === 0) return [];
     const entry = this.ensureRun(key.runId);
     const at = this.now().toISOString();
+    const base = this.lastSeq(key.runId);
     const created: StepActivity[] = [];
-    for (const body of bodies) {
-      const seq = entry.records.length + 1;
+    for (const [index, body] of bodies.entries()) {
       const activity: StepActivity = {
         schema: STEP_ACTIVITY_SCHEMA,
         runId: key.runId,
         nodeId: key.nodeId,
         attemptId: key.attemptId,
-        seq,
+        seq: base + index + 1,
         at,
         kind: body.kind,
         text: body.text,
         ...(body.tool === undefined ? {} : { tool: { ...body.tool } }),
       };
-      entry.records.push(activity);
       created.push(activity);
     }
+    if (this.store === undefined) entry.records.push(...created);
+    else this.store.appendStepActivities(created);
     for (const subscription of Array.from(entry.subscriptions)) {
       if (this.runs.get(key.runId) !== entry) break;
       if (!entry.subscriptions.has(subscription)) continue;
@@ -300,6 +317,7 @@ export class StepActivityHub {
 
   /** Everything remembered for the run with seq > afterSeq, in seq order. Unknown run: []. */
   read(runId: string, afterSeq: number): StepActivity[] {
+    if (this.store !== undefined) return this.store.readStepActivities(runId, afterSeq);
     const entry = this.runs.get(runId);
     if (entry === undefined) return [];
     const start = afterSeq <= 0 ? 0 : Math.floor(afterSeq);
@@ -327,10 +345,15 @@ export class StepActivityHub {
 
   /** The seq of the newest record of the run, 0 if none. */
   lastSeq(runId: string): number {
+    if (this.store !== undefined) return this.store.lastStepActivitySeq(runId);
     return this.runs.get(runId)?.records.length ?? 0;
   }
 
-  /** The run is over or was removed: forget its records and its listeners. Later publishes start again at seq 1. */
+  /**
+   * The run is over or was removed: forget its live listeners. With a record store the records
+   * remain and later publishes continue their numbering; without one they are forgotten and later
+   * publishes start again at seq 1.
+   */
   closeRun(runId: string): void {
     this.runs.delete(runId);
   }

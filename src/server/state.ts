@@ -7,8 +7,13 @@ import {
 } from "../client/protocol.js";
 import { AttemptTime, type AttemptClock } from "../state/attempt-time.js";
 import { StateDatabase } from "../state/database.js";
-import { canonicalJson, type JsonValue } from "../state/json.js";
+import { canonicalJson, parseJson, type JsonValue } from "../state/json.js";
 import { tokenHash } from "../state/mutation.js";
+import {
+  parseStepActivity,
+  STEP_ACTIVITY_SCHEMA,
+  type StepActivity,
+} from "../state/step-activity.js";
 import {
   WorkflowMessageStore,
   workflowMessageIdFor,
@@ -827,6 +832,69 @@ export class ServerStateStore {
       .flatMap((row) =>
         isRequestIdRow(row) ? [this.requireInteractiveRequest(row.requestId)] : [],
       );
+  }
+
+  /** Records numbered step activity durably. One write transaction per publish batch. */
+  appendStepActivities(activities: StepActivity[]): void {
+    if (activities.length === 0) return;
+    this.state.transaction(() => {
+      const insert = this.state.connection.prepare(
+        `INSERT INTO step_activities (run_id, seq, node_id, attempt_id, at, kind, text, tool)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      );
+      for (const activity of activities) {
+        insert.run(
+          activity.runId,
+          activity.seq,
+          activity.nodeId,
+          activity.attemptId,
+          activity.at,
+          activity.kind,
+          activity.text,
+          activity.tool === undefined ? null : canonicalJson(activity.tool),
+        );
+      }
+    });
+  }
+
+  /** The run's activity with seq strictly greater than afterSeq, in seq order, parsed strictly. */
+  readStepActivities(runId: string, afterSeq: number): StepActivity[] {
+    const after = afterSeq <= 0 ? 0 : Math.floor(afterSeq);
+    const rows = this.state.connection
+      .prepare(
+        `SELECT seq, node_id AS nodeId, attempt_id AS attemptId, at, kind, text, tool
+         FROM step_activities WHERE run_id = ? AND seq > ? ORDER BY seq`,
+      )
+      .all(runId, after) as Array<{
+      seq: number;
+      nodeId: string;
+      attemptId: string;
+      at: string;
+      kind: string;
+      text: string;
+      tool: string | null;
+    }>;
+    return rows.map((row) =>
+      parseStepActivity({
+        schema: STEP_ACTIVITY_SCHEMA,
+        runId,
+        nodeId: row.nodeId,
+        attemptId: row.attemptId,
+        seq: row.seq,
+        at: row.at,
+        kind: row.kind,
+        text: row.text,
+        ...(row.tool === null ? {} : { tool: parseJson(row.tool) }),
+      }),
+    );
+  }
+
+  /** The seq of the run's newest recorded activity, 0 when it has none. */
+  lastStepActivitySeq(runId: string): number {
+    const row = this.state.connection
+      .prepare(`SELECT max(seq) AS seq FROM step_activities WHERE run_id = ?`)
+      .get(runId) as { seq: number | null } | undefined;
+    return row?.seq ?? 0;
   }
 
   listPendingDecisionInteractionsForRun(runId: string): InteractiveRequestRecord[] {
