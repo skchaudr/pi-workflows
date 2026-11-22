@@ -38,7 +38,10 @@ The runner should provide:
 - A dry run showing selected slice ids, output paths, and prompt sizes without contacting a model. Selective dispatch permits a pilot, failed-slice retry, or later follow-up slice without paying for the whole batch again.
 - Parallelism appropriate to provider rate limits, request timeouts, and bounded transient retries. A timed-out generation may still be billed; retries are not free. Do not blindly restart the whole batch.
 - Staged outputs separate from production source, plus the full raw returned text for inspection. Never execute generated output as part of dispatch. Preserve successful work when another slice fails. Track which attempt produced each accepted file so a stale staged result is not mistaken for a fresh success; a simple run directory or result log is enough.
+- Visible progress while requests are out. Print a line when each slice is sent, a line when each returns (id, seconds, tokens in and out, lines per returned file, or the failure), and a periodic line naming the slices still pending with their elapsed time. A batch that prints nothing until the end is a black box for the user.
 - Detection of empty and provider-truncated returns. Preserve partial text for diagnosis, but do not call it a completed file. Report failed ids explicitly; new runners should exit nonzero on partial failure. These are runner checks, not a demand that the user manually sanitize every response.
+
+Run the dispatch where the user can watch it. When a terminal multiplexer with a CLI is available (for example a Rex tab or pane), start the runner there in a named tab instead of as a hidden background command, tell the user the tab's name, and leave the tab open afterwards so the per-slice results stay readable. Do not pipe the runner's output through anything that withholds it until exit.
 
 Run the dry run and inspect actual prompts, not just sizes. Confirm context coverage, output ownership, return formats, and the selected provider/model before dispatch. A one-slice pilot is useful when the endpoint or contract is unproven, not a mandatory extra paid stage for every batch.
 
