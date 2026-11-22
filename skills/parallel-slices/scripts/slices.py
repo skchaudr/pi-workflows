@@ -84,7 +84,7 @@ def context_part(repos, cid: str, entry: str):
             fail(f"{cid}: {entry} is outside the file's {len(all_lines)} lines")
         text = "\n".join(all_lines[a - 1 : b])
         label = f"`{rel}` lines {a}-{b} of {len(all_lines)} (repository {repo.name})"
-        short = f"{rel} lines {a}-{b}"
+        short = f"{rel}#L{a}-{b}"
     size = len(text.encode("utf-8"))
     if size > CONTEXT_CAP_BYTES:
         fail(
@@ -202,7 +202,7 @@ def run_task(args, key, system, prompt, task, out: Path, repos):
         (out / "_returns" / f"{cid}.usage.json").write_text(json.dumps(record, indent=2), encoding="utf-8")
         result = {"task": task, "seconds": time.time() - start, "usage": usage, "returned_tokens": tokens_of(raw)}
         if finish.lower() in ("length", "max_tokens"):
-            return {**result, "ok": False, "error": f"cut off at max_tokens={args.max_tokens}; partial text in {ret}"}
+            return {**result, "ok": False, "error": f"cut off at {args.max_tokens:,} out; partial in {ret}"}
         if not raw.strip():
             return {**result, "ok": False, "error": "empty return"}
         files = split_files(raw)
@@ -230,9 +230,10 @@ def actual_cost(u: dict, args) -> float:
     return (u.get("prompt_tokens") or 0) * args.rate_in / 1e6 + (u.get("completion_tokens") or 0) * args.rate_out / 1e6
 
 
-def usage_line(u: dict, args) -> str:
-    reasoning = (u.get("completion_tokens_details") or {}).get("reasoning_tokens")
-    return f"in {ktok(u.get('prompt_tokens'))}, out {ktok(u.get('completion_tokens'))}, reasoning {ktok(reasoning)}, {money(actual_cost(u, args))}"
+def k1(n) -> str:
+    if not isinstance(n, (int, float)):
+        return "\u2013"
+    return str(int(n)) if n < 1000 else f"{n / 1000:.1f}k"
 
 
 def rates(text: str):
@@ -248,22 +249,91 @@ def pretty_range(values) -> str:
     return ktok(lo) if ktok(lo) == ktok(hi) else f"{ktok(lo)}\u2013{ktok(hi)}"
 
 
-def countdown(count: int, est: float, baseline_total: float):
+TTY = sys.stdout.isatty()
+
+
+def dim(text: str) -> str:
+    return f"\x1b[2m{text}\x1b[0m" if TTY else text
+
+
+def red(text: str) -> str:
+    return f"\x1b[31m{text}\x1b[0m" if TTY else text
+
+
+def plural(n: int, word: str) -> str:
+    return f"{n} {word}" if n == 1 else f"{n} {word}s"
+
+
+def times(multiple: float) -> str:
+    return f"{multiple:.1f}\u00d7"
+
+
+def print_screen(args, tasks, parts, prompts, estimates, source, show_files):
+    """The cost screen: one header line, one row per slice, a total row against the baseline."""
+    print(
+        f"{args.model} \u00b7 effort {args.effort} \u00b7 max out {args.max_tokens:,} \u00b7 "
+        f"${args.rate_in:g} in / ${args.rate_out:g} out per M \u00b7 {source}"
+    )
+    print()
+    total, baseline_total = sum(estimates.values()), args.baseline * len(tasks)
+    sizes = {t["custom_id"]: sum(n for _, _, n in parts[t["custom_id"]]) for t in tasks}
+    # name, files, KB, in, out, est, multiple
+    rows = [
+        [t["custom_id"], plural(len(parts[t["custom_id"]]), "file"), f"{sizes[t['custom_id']] / 1024:.0f} KB",
+         k1(tokens_of(prompts[t["custom_id"]])), k1(args.expect_out), money(estimates[t["custom_id"]]),
+         estimates[t["custom_id"]] / args.baseline]
+        for t in tasks
+    ]
+    total_row = [
+        plural(len(tasks), "slice"), plural(sum(len(parts[t["custom_id"]]) for t in tasks), "file"),
+        f"{sum(sizes.values()) / 1024:.0f} KB", k1(sum(tokens_of(p) for p in prompts.values())),
+        k1(args.expect_out * len(tasks)), money(total), total / baseline_total,
+    ]
+    everything = rows + [total_row]
+    head = ["slice", "", "", "in", "out", "est", "\u00d7 base"]
+    wn = max(len(r[0]) for r in everything + [head])
+    wf, wk = max(len(r[1]) for r in everything), max(len(r[2]) for r in everything)
+    wc = max(wf + 2 + wk, len("context"))
+    wi, wo, we = (max(len(r[i]) for r in everything + [head]) for i in (3, 4, 5))
+    wm = max(len(times(r[6])) for r in everything + [[0] * 6 + [0.0]] if isinstance(r[6], float))
+    wm = max(wm, len(head[6]))
+
+    def line(row, header=False):
+        ctx = "context" if header else row[1].ljust(wf) + "  " + row[2].rjust(wk)
+        mult = row[6] if header else times(row[6])
+        cell = mult.rjust(wm)
+        if not header and row[6] > MAX_MULTIPLE:
+            cell = red(cell)
+        return f"  {row[0].ljust(wn)}  {ctx.ljust(wc)}   {row[3].rjust(wi)}   {row[4].rjust(wo)}   {row[5].rjust(we)}   {cell}"
+
+    header = line(head, header=True)
+    print(header)
+    for row, t in zip(rows, tasks):
+        print(line(row))
+        if show_files:
+            entries = [(e.split(":", 1)[1], n) for e, (_, _, n) in zip(t.get("context_files", []), parts[t["custom_id"]])]
+            pad = max((len(e) for e, _ in entries), default=0)
+            for e, n in entries:
+                print(dim(f"    {e.ljust(pad)}   {n / 1024:.1f} KB"))
+    print("  " + "\u2500" * (len(header) - 2))
+    print(line(total_row) + f"   baseline {money(baseline_total)}")
+    return total, baseline_total
+
+
+def countdown(est: float):
     """30 seconds before the first request. Ctrl-C leaves with code 130 and nothing sent."""
-    tty = sys.stdout.isatty()
-    noun = "slice" if count == 1 else "slices"
     try:
         for left in range(COUNTDOWN_SECONDS, 0, -1):
-            line = f"sending {count} {noun} in {left}s \u2014 est {money(est)} (baseline {money(baseline_total)}, {est / baseline_total:.1f}x) \u2014 Ctrl-C to cancel"
-            if tty:
+            line = f"Sending in {left}s \u00b7 est {money(est)} \u00b7 Ctrl-C to cancel"
+            if TTY:
                 print(f"\r{line}\x1b[K", end="", flush=True)
-            elif left % 5 == 0:
+            elif left % 10 == 0:
                 print(line, flush=True)
             time.sleep(1)
     except KeyboardInterrupt:
-        print(("\n" if tty else "") + "cancelled, nothing sent", flush=True)
+        print(("\n" if TTY else "") + "Cancelled \u00b7 nothing sent", flush=True)
         sys.exit(130)
-    if tty:
+    if TTY:
         print(flush=True)
 
 
@@ -281,6 +351,7 @@ def main(argv=None):
     ap.add_argument("--key-env", default="OPENROUTER_API_KEY")
     ap.add_argument("--output", type=Path, help="default: <tasks file stem>_out beside the tasks file")
     ap.add_argument("--only", help="comma-separated slice ids")
+    ap.add_argument("--files", action="store_true", help="list each slice's context files when sending (a dry run always lists them)")
     ap.add_argument("--dry-run", action="store_true", help="write prompts, print the cost screen, send nothing")
     args = ap.parse_args(argv)
     sys.stdout.reconfigure(line_buffering=True)
@@ -288,14 +359,14 @@ def main(argv=None):
 
     if args.rates:
         args.rate_in, args.rate_out = args.rates
-        rate_note, reasoning_rate = "from --rates", None
+        source = "--rates" if args.endpoint == OPENROUTER_ENDPOINT else f"--rates \u00b7 {args.endpoint}"
     elif args.endpoint == OPENROUTER_ENDPOINT:
         args.rate_in, args.rate_out, reasoning_rate = fetch_rates(args.model)
-        rate_note = f"from openrouter.ai/api/v1/models at {datetime.now(timezone.utc):%Y-%m-%d %H:%M:%S}Z"
+        source = f"OpenRouter {datetime.now(timezone.utc):%H:%M}Z"
+        if reasoning_rate and reasoning_rate > args.rate_out:
+            args.rate_out = reasoning_rate  # thinking is billed as output; price expected output at the higher rate
     else:
         fail(f"{args.endpoint} is not OpenRouter, so there is no live price list; pass --rates IN,OUT")
-    if reasoning_rate and reasoning_rate > args.rate_out:
-        args.rate_out = reasoning_rate  # thinking is billed as output; price expected output at the higher rate
 
     repos, all_tasks, system = load_tasks(args.tasks.resolve())
     out = (args.output or args.tasks.resolve().with_name(args.tasks.stem + "_out")).resolve()
@@ -307,37 +378,24 @@ def main(argv=None):
     parts = {t["custom_id"]: context_parts(repos, t) for t in tasks}  # fails on a missing or over-cap context entry
     prompts = {t["custom_id"]: build_prompt(parts[t["custom_id"]], t) for t in tasks}
     estimates = {cid: estimate(p, args) for cid, p in prompts.items()}
-    total, baseline_total = sum(estimates.values()), args.baseline * len(tasks)
     worst = max(e / args.baseline for e in estimates.values())
 
-    print(f"model {args.model} at {args.endpoint}, effort {args.effort}, max_tokens {args.max_tokens}")
-    reasoning_text = f", thinking ${reasoning_rate:g}" if reasoning_rate is not None else ""
-    print(f"rates ${args.rate_in:g} in / ${args.rate_out:g} out per million tokens{reasoning_text} {rate_note}")
-    for t in tasks:
-        cid = t["custom_id"]
-        print(f"  {cid}: returns {', '.join(t['output_files'])}")
-        for label, _, size in parts[cid]:
-            print(f"    {label}: {size:,} bytes, ~{size // 4:,} tokens")
-        print(f"    prompt ~{tokens_of(prompts[cid]):,} tokens in, expect {args.expect_out:,} out, est {money(estimates[cid])} ({estimates[cid] / args.baseline:.1f}x baseline)")
-    tokens_in = sum(tokens_of(p) for p in prompts.values())
-    print(
-        f"batch: {len(tasks)} slice(s), ~{tokens_in:,} tokens in, est {money(total)}, baseline {money(baseline_total)}, "
-        f"worst {worst:.1f}x, model {args.model}, effort {args.effort}, max_tokens {args.max_tokens}"
-    )
+    total, baseline_total = print_screen(args, tasks, parts, prompts, estimates, source, args.dry_run or args.files)
+    print()
 
     if args.dry_run:
         for cid, prompt in prompts.items():
             p = out / "_prompts" / f"{cid}.md"
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(prompt, encoding="utf-8")
-        print(f"[dry run] prompts written to {out / '_prompts'}. Nothing was sent.")
+        print(f"Dry run \u00b7 prompts in {out / '_prompts'} \u00b7 nothing sent")
         return 0
     if worst > args.accept_multiple:
         fail(f"worst slice is {worst:.1f}x the baseline; the user must approve that multiple (--accept-multiple {worst:.1f}) before sending")
     key = os.environ.get(args.key_env)
     if not key:
         fail(f"{args.key_env} is not set")
-    countdown(len(tasks), total, baseline_total)
+    countdown(total)
 
     pending = set(prompts)
     started = time.time()
@@ -345,49 +403,53 @@ def main(argv=None):
 
     def ticker():
         while not done.wait(20):
-            print(f"  ... {time.time() - started:4.0f}s  waiting on: {', '.join(sorted(pending))}", flush=True)
+            print(dim(f"  \u2026 {time.time() - started:.0f}s \u00b7 waiting on {', '.join(sorted(pending))}"), flush=True)
 
     threading.Thread(target=ticker, daemon=True).start()
+    name_w = max(len(t["custom_id"]) for t in tasks)
     failed, results, running = [], [], 0.0
     with ThreadPoolExecutor(max_workers=min(len(tasks), 16)) as pool:
-        futures = []
-        for t in tasks:
-            print(f"  sent {t['custom_id']}", flush=True)
-            futures.append(pool.submit(run_task, args, key, system, prompts[t["custom_id"]], t, out, repos))
+        futures = [pool.submit(run_task, args, key, system, prompts[t["custom_id"]], t, out, repos) for t in tasks]
         for fut in as_completed(futures):
             r = fut.result()
             cid = r["task"]["custom_id"]
             pending.discard(cid)
             results.append(r)
-            running += actual_cost(r["usage"], args)
-            tail = f"{usage_line(r['usage'], args)} (est {money(estimates[cid])}) \u2014 total {money(running)} of est {money(total)}"
+            cost = actual_cost(r["usage"], args)
+            running += cost
+            u = r["usage"]
+            think = (u.get("completion_tokens_details") or {}).get("reasoning_tokens")
             if r["ok"]:
-                print(f"  ok   {cid}: {r['seconds']:.0f}s, {tail}, lines {r['lines']}", flush=True)
+                mark = "\u2713"
+                body = f"{k1(u.get('prompt_tokens')):>6} in   {k1(u.get('completion_tokens')):>6} out   {k1(think):>6} think"
             else:
-                print(f"  FAIL {cid}: {r['error']} ({tail})", flush=True)
+                mark = red("\u2717")
+                body = " ".join(str(r["error"]).split()).ljust(38)
                 failed.append(cid)
+            print(f"  {mark} {cid.ljust(name_w)}   {r['seconds']:>3.0f}s   {body}   {money(cost)}  (est {money(estimates[cid])})   total {money(running)}", flush=True)
     done.set()
-    print(f"done in {time.time() - started:.0f}s; usage per slice in {out / '_returns'}")
 
     actual = running
-    per_slice = {r["task"]["custom_id"]: actual_cost(r["usage"], args) for r in results}
-    multiples = ", ".join(f"{cid} {c / args.baseline:.1f}x" for cid, c in sorted(per_slice.items()))
-    print(f"actual {money(actual)}, estimated {money(total)}, baseline {money(baseline_total)}; actual {actual / baseline_total:.1f}x baseline ({multiples})")
+    multiple = actual / baseline_total
+    mult_text = times(multiple)
+    print()
+    print(
+        f"Done in {time.time() - started:.0f}s \u00b7 {sum(1 for r in results if r['ok'])} of {len(tasks)} whole \u00b7 actual {money(actual)} \u00b7 "
+        f"est {money(total)} \u00b7 baseline {money(baseline_total)} \u00b7 {red(mult_text) if multiple > MAX_MULTIPLE else mult_text}"
+    )
     pst = datetime.now(ZoneInfo("America/Los_Angeles")).strftime("%Y-%m-%d")
     billed_in = [r["usage"].get("prompt_tokens") for r in results if r["usage"].get("prompt_tokens")]
     returned = [r["returned_tokens"] for r in results if r["returned_tokens"]]
     whole = sum(1 for r in results if r["ok"])
     names = ", ".join(sorted({p.name for p in repos.values()}))
-    print("ledger row (references/runs.md):")
+    print("Ledger row:")
     print(
         f"| {pst} | {names} \u00b7 `{args.tasks.name}` | `{args.model}` | {len(results)} | "
         f"{pretty_range(billed_in) if billed_in else 'n/a'} | {pretty_range(returned) if returned else 'n/a'} | "
         f"{money(total)} | **actual {money(actual)}** ({money(actual / len(results))} per slice) | {whole} of {len(tasks)} whole |"
     )
-    if failed:
-        print(f"failed: {', '.join(failed)}")
-        return 1
-    return 0
+    print(f"Usage files in {out / '_returns'}")
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

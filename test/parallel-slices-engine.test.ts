@@ -58,7 +58,7 @@ describe("parallel-slices engine", () => {
   it("accepts a line excerpt of the same file and writes the prompt", async () => {
     const result = run([await tasksFile("r:big.ts#L1-100"), ...flags, "--dry-run"]);
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain("Nothing was sent");
+    expect(result.stdout).toContain("nothing sent");
     const prompt = await fs.readFile(path.join(dir, "tasks_out", "_prompts", "a.md"), "utf8");
     expect(prompt).toContain("`big.ts` lines 1-100 of 4001");
   });
@@ -87,11 +87,23 @@ describe("parallel-slices engine", () => {
   it("prints each context entry with its bytes and the batch line", async () => {
     const result = run([await tasksFile("r:big.ts#L1-100"), ...flags, "--dry-run"]);
     expect(result.status).toBe(0);
-    expect(result.stdout).toMatch(/big\.ts lines 1-100: 1,499 bytes, ~374 tokens/);
-    expect(result.stdout).toMatch(/rates \$2 in \/ \$10 out per million tokens from --rates/);
-    expect(result.stdout).toMatch(
-      /batch: 1 slice\(s\), ~\d+ tokens in, est \$[\d.]+, baseline \$0\.17, worst [\d.]+x, model test\/model, effort low, max_tokens 64000/,
+    expect(result.stdout).toContain(
+      "test/model · effort low · max out 64,000 · $2 in / $10 out per M · --rates",
     );
+    expect(result.stdout).toMatch(/slice\s+context\s+in\s+out\s+est\s+× base/);
+    expect(result.stdout).toMatch(/\n {2}a\s+1 file {2}1 KB\s+414\s+15\.0k\s+\$0\.15\s+0\.9×/);
+    expect(result.stdout).toMatch(/\n {4}big\.ts#L1-100 {3}1\.5 KB/);
+    expect(result.stdout).toMatch(/1 slice\s+1 file {2}1 KB .*baseline \$0\.17/);
+    expect(result.stdout).toContain("Dry run · prompts in ");
+  });
+
+  it("lists context files on a send only with --files", async () => {
+    const file = await tasksFile("r:big.ts#L1-100");
+    const quiet = run([file, ...flags, "--accept-multiple", "10", "--output", dir, "--dry-run"]);
+    expect(quiet.stdout).toContain("big.ts#L1-100");
+    const send = run([file, ...flags]);
+    expect(send.stdout).not.toContain("big.ts#L1-100");
+    expect(send.stderr).toContain("OPENROUTER_API_KEY is not set");
   });
 
   it("refuses a non-openrouter endpoint without rates", async () => {
@@ -117,12 +129,12 @@ describe("parallel-slices engine", () => {
     await new Promise<void>((resolve) => {
       child.stdout.on("data", (chunk: Buffer) => {
         stdout += chunk.toString();
-        if (stdout.includes("sending 1 slice in")) resolve();
+        if (stdout.includes("Sending in")) resolve();
       });
     });
     child.kill("SIGINT");
     expect(await exited).toBe(130);
-    expect(stdout).toContain("cancelled, nothing sent");
+    expect(stdout).toContain("Cancelled · nothing sent");
     await expect(fs.stat(path.join(dir, "tasks_out", "_returns"))).rejects.toThrow();
   });
 });
