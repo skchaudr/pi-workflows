@@ -5,7 +5,7 @@ the finished run. Steps can run on Grok, Claude, or Pi in one workflow. Grok Bui
 fork that ships the `grok-fork` pager and the `grok-acpx-acp` driver.
 
 The commands and keys on this page were run on 2026-11-22 against pi-workflows `2fb32f5` and the
-fork at `20aedddf`.
+fork at `20aedddf`. The fork is now at `a4650ff1`, which changed wording only.
 
 ## Before you start
 
@@ -180,7 +180,6 @@ piw
 - After a cancel, the last diagram and path line still mark the interrupted step as running.
 - Answering the gate makes the transcript jump down and back up once.
 - In a terminal narrower than about 100 columns the diagram is replaced by its source text.
-- Step cards and the tray call a step a "subagent".
 - `/runs` and `/open` only know acpx flow runs. A pi-workflows run is not listed by `/runs`, and
   `/open` answers `Run … not found` for its id. Use `/acpx` or `piw` for those.
 
