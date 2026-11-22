@@ -947,11 +947,20 @@ export class WorkflowServer {
           return this.reportWorkflowBranch(connection, request);
         case "workflowTurn.report":
           return this.reportWorkflowTurn(connection, request);
-        case "run.changeSettings":
+        case "run.changeSettings": {
           this.requireSessionCommand(connection, request);
+          if (this.queue.getWorkflowRun(requireRunId(request)) === undefined) {
+            return clientResponse(
+              request.requestId,
+              "notFound",
+              undefined,
+              "Workflow run not found",
+            );
+          }
           return await this.executeMaintenanceCommand(request, async () =>
             toJsonValue(await this.changeSessionWorkflowSettings(request)),
           );
+        }
         case "session.record":
           this.requireSessionCommand(connection, request);
           return await this.executeMaintenanceCommand(request, async () =>
@@ -1798,6 +1807,9 @@ export class WorkflowServer {
       }
       case "run.pause": {
         const runId = requireRunId(request);
+        if (this.queue.getWorkflowRun(runId) === undefined) {
+          return { outcome: "notFound", error: "Workflow run not found" };
+        }
         const active = this.activeRuns.get(runId);
         if (active !== undefined) {
           if (active.control === "pause") {
@@ -1860,6 +1872,9 @@ export class WorkflowServer {
       }
       case "run.resume": {
         const runId = requireRunId(request);
+        if (this.queue.getWorkflowRun(runId) === undefined) {
+          return { outcome: "notFound", error: "Workflow run not found" };
+        }
         const resumedInteraction = this.state.transaction(() => {
           const now = Date.now();
           if (!this.queue.resumePausedInteraction({ runId, now: new Date(now).toISOString() })) {
@@ -2084,6 +2099,9 @@ export class WorkflowServer {
     session: { targetSessionId: string },
   ): Omit<ClientResponse, "schema" | "type" | "requestId"> {
     const runId = requireRunId(request);
+    if (this.queue.getWorkflowRun(runId) === undefined) {
+      return { outcome: "notFound", error: "Workflow run not found" };
+    }
     if (this.runStore.originSessionId(runId) !== session.targetSessionId) {
       return { outcome: "rejected", error: "Workflow run belongs to another Pi session" };
     }
@@ -2112,6 +2130,9 @@ export class WorkflowServer {
     session: { targetSessionId: string },
   ): Omit<ClientResponse, "schema" | "type" | "requestId"> {
     const runId = requireRunId(request);
+    if (this.queue.getWorkflowRun(runId) === undefined) {
+      return { outcome: "notFound", error: "Workflow run not found" };
+    }
     if (this.runStore.originSessionId(runId) !== session.targetSessionId) {
       return { outcome: "rejected", error: "Workflow run belongs to another Pi session" };
     }

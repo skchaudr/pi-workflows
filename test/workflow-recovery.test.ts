@@ -11,7 +11,7 @@ import { WorkflowMessageStore } from "../src/state/workflow-messages.js";
 import { WorkflowRunQueueStore } from "../src/workflows/queue.js";
 import { createDefinitionSnapshot } from "../src/workflows/store.js";
 import { terminalWorkflowMessageContent } from "../src/workflows/workflow-message-content.js";
-import { makeTempDir } from "./helpers.js";
+import { makeTempDir, reportBranch, waitUntil } from "./helpers.js";
 
 async function fixture() {
   const directory = await makeTempDir("workflow-recovery");
@@ -167,6 +167,91 @@ it("answers run.cancel for a run id that does not exist with a clear not-found r
     f.queue.close();
   }
 });
+
+it("answers every run-targeted operation for an unknown run id with notFound", async () => {
+  const f = await fixture();
+  const server = new WorkflowServer({ databasePath: f.databasePath, claimPollMs: 60_000 });
+  const client = new WorkflowClient({ databasePath: f.databasePath });
+  const missing = "no-such-run";
+  try {
+    await server.start();
+
+    // Operations that need no session authority answer before any other check.
+    const cancelled = await client.request({ operation: "run.cancel", runId: missing });
+    expect(cancelled).toMatchObject({ outcome: "notFound", error: "Workflow run not found" });
+    const paused = await client.request({ operation: "run.pause", runId: missing });
+    expect(paused).toMatchObject({ outcome: "notFound", error: "Workflow run not found" });
+    const resumed = await client.request({ operation: "run.resume", runId: missing });
+    expect(resumed).toMatchObject({ outcome: "notFound", error: "Workflow run not found" });
+
+    // The read paths answer the same way.
+    const status = await client.request({ operation: "run.status", runId: missing });
+    expect(status.outcome).toBe("notFound");
+    expect(status.error).toContain("Workflow run not found");
+    expect(await client.getRun(missing)).toBeNull();
+
+    // Session-authority operations answer the same way once the coordinator
+    // claim is reported; an unknown run is not confused with a foreign run.
+    let epoch: string | null = null;
+    const unwatch = await client.watchSession(
+      "k11-session",
+      (event) => {
+        if (event.event !== "session_snapshot") return;
+        epoch = (event.payload as { coordinatorEpoch?: string | null }).coordinatorEpoch ?? null;
+      },
+      { subscriptionId: "k11-session-watch", coordinator: true },
+    );
+    try {
+      await waitUntil(() => epoch !== null, 30_000);
+      const authority = {
+        targetSessionId: "k11-session",
+        coordinatorEpoch: epoch as unknown as string,
+      };
+      const reported = await reportBranch(client, authority, {
+        workflowMessageId: null,
+        piSessionEntryId: null,
+        isIdle: true,
+        hasPendingMessages: false,
+      });
+      expect(reported.outcome).toBe("accepted");
+
+      const restarted = await client.request({
+        operation: "run.restart",
+        runId: missing,
+        payload: { ...authority },
+      });
+      expect(restarted.outcome).toBe("notFound");
+      expect(restarted.error).toContain("Workflow run not found");
+
+      const settings = await client.request({
+        operation: "run.changeSettings",
+        runId: missing,
+        payload: { ...authority },
+      });
+      expect(settings).toMatchObject({ outcome: "notFound", error: "Workflow run not found" });
+
+      const queued = await client.request({
+        operation: "followUp.queue",
+        runId: missing,
+        payload: { ...authority, prompt: "later" },
+      });
+      expect(queued).toMatchObject({ outcome: "notFound", error: "Workflow run not found" });
+
+      const removed = await client.request({
+        operation: "followUp.remove",
+        runId: missing,
+        payload: { ...authority, followUpId: "none" },
+      });
+      expect(removed).toMatchObject({ outcome: "notFound", error: "Workflow run not found" });
+    } finally {
+      await unwatch();
+    }
+  } finally {
+    await client.close();
+    await server.stop();
+    f.queue.close();
+  }
+}, 60_000);
 
 it("prevents concurrent recovery siblings and cancels the sole queued child", async () => {
   const f = await fixture();
