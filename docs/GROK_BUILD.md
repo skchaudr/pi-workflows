@@ -20,8 +20,8 @@ You need three things on the machine:
 - **The agents the workflow names.** A step with `agent: "claude"` needs Claude Code signed in. A
   step with `agent: "grok-build"` needs Grok signed in. A step without `agent` runs on Pi.
 
-Grok Build connects to the workflow server; it does not start one. Pi starts the server from the
-package its settings name. To check, stop or start it by hand, run these from this checkout:
+`/flow` starts the workflow server when none is running, from the package Pi's settings name. Pi
+does the same. To check, stop or start it by hand, run these from this checkout:
 
 ```bash
 node dist/viewer/cli.js server status
@@ -110,8 +110,12 @@ export default defineWorkflow({
 In the folder that holds the workflow file:
 
 ```bash
-grok-fork --agent-cmd ~/.grok/bin/grok-acpx-acp
+grok acpx
 ```
+
+`grok` is the shell function from the fork's `scripts/hub/grok-picker.zsh`; the fork's
+`scripts/hub/README.md` describes how to install it. `grok grok-pi` starts Pi in the same pager
+with the pi-workflows extension loaded, for `/workflow` and `/workflows`.
 
 In Grok Build, start the run:
 
