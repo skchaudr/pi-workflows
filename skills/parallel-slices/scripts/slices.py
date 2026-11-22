@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """The one dispatch engine for parallel slices. Do not copy it into a task; give it a tasks file.
 
-  python3 slices.py TASKS.py --model M --effort low --expect-out 15000 --baseline 0.17 --dry-run
-  python3 slices.py TASKS.py ...same flags... --only id1,id2          # pilot or retry
-  python3 slices.py TASKS.py ...same flags...                          # send
+  slices send TASKS.py --model M --effort low --expect-out 15000 --baseline 0.17 --dry-run
+  slices send TASKS.py ...same flags... --only id1,id2          # pilot or retry
+  slices send TASKS.py ...same flags...                          # send
 
 TASKS.py holds data only:
   REPOS = {"piw": "/abs/path/to/repo"}
@@ -16,6 +16,7 @@ Rates come live from openrouter.ai/api/v1/models; --rates IN,OUT overrides them 
 Dry run and send print the same cost screen. Sending refuses an estimate above 2x the baseline per slice unless
 --accept-multiple covers it, then counts down 30 seconds (Ctrl-C cancels, exit 130) before the first request.
 The key is read from the environment variable named by --key-env and never printed.
+A finished send appends one line to runs.jsonl in the state directory.
 """
 import argparse, importlib.util, json, os, re, signal, sys, threading, time, urllib.error, urllib.request
 from datetime import datetime, timezone
@@ -38,6 +39,18 @@ FILE_RE = re.compile(
     r"^=== FILE: (?P<path>[^\n]+?) ===[ \t]*\n```[a-zA-Z0-9_-]*[ \t]*\n(?P<body>[\s\S]*?)\n```[ \t]*(?=\n+=== FILE: |\s*\Z)",
     re.M,
 )
+
+
+USAGE = """usage: slices <command> ...
+
+  send TASKS.py ...   dry run or send a batch: cost screen, 30 s countdown, run record
+  show TASKS.py ...   the cost screen only; sends nothing, writes nothing
+  runs                recorded runs, newest first
+  status RUN          per-slice result of a run: a tasks file, its _out dir, or an index from `runs` (1 = newest)
+  ledger              the run ledger (references/runs.md)
+
+Run records go to runs.jsonl in $SLICES_STATE_DIR (default ~/.local/state/slices).
+`slices send --help` lists the send flags."""
 
 
 def fail(msg: str):
@@ -361,39 +374,252 @@ def countdown(est: float):
         print(flush=True)
 
 
-def main(argv=None):
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+def result_line(ok, cid, name_w, seconds, prompt, completion, think, error, cost, est):
+    """One slice's result up to its cost and estimate; the caller appends what follows (running total or return path)."""
+    if ok:
+        mark = paint("✓", "bold", "green")
+        body = (
+            paint(f"{k1(prompt):>6} in", "cyan") + "   "
+            + paint(f"{k1(completion):>6} out", "magenta") + "   "
+            + dim(f"{k1(think):>6} think")
+        )
+    else:
+        mark = paint("✗", "bold", "red")
+        body = paint(" ".join(str(error).split()).ljust(38), "red")
+    est_text = money(est) if isinstance(est, (int, float)) else "–"
+    return (
+        f"  {mark} {paint(cid.ljust(name_w), 'bold')}   {dim(f'{seconds:>3.0f}s')}   {body}   "
+        f"{paint(money(cost) if isinstance(cost, (int, float)) else chr(0x2013), 'bold')}  {dim(f'(est {est_text})')}"
+    )
+
+
+def state_dir() -> Path:
+    return Path(os.environ.get("SLICES_STATE_DIR") or Path.home() / ".local" / "state" / "slices")
+
+
+def read_runs():
+    """Recorded runs, newest first. Reads only; the directory is not created."""
+    path = state_dir() / "runs.jsonl"
+    if not path.is_file():
+        return []
+    runs = []
+    for n, text in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if not text.strip():
+            continue
+        try:
+            runs.append(json.loads(text))
+        except json.JSONDecodeError as e:
+            fail(f"{path} line {n} is not JSON ({e}); fix or remove that line")
+    return runs[::-1]
+
+
+def record_run(record: dict) -> Path:
+    path = state_dir() / "runs.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(record) + "\n")
+    return path
+
+
+def pst_stamp(iso: str) -> str:
+    return datetime.fromisoformat(iso).astimezone(ZoneInfo("America/Los_Angeles")).strftime("%Y-%m-%d %H:%M")
+
+
+def render_table(header, rows, right=(), style=None):
+    """Aligned columns, a dim header, two-space indent; style(col, padded_cell) may colour a cell after padding."""
+    widths = [max(len(str(r[c])) for r in rows + [header]) for c in range(len(header))]
+
+    def pad(c, text):
+        return str(text).rjust(widths[c]) if c in right else str(text).ljust(widths[c])
+
+    lines = ["  " + "   ".join(dim(pad(c, h)) for c, h in enumerate(header)).rstrip()]
+    for r in rows:
+        cells = [pad(c, v) for c, v in enumerate(r)]
+        if style:
+            cells = [style(c, v) for c, v in enumerate(cells)]
+        lines.append("  " + "   ".join(cells).rstrip())
+    return lines
+
+
+def multiple_of(actual, baseline):
+    return actual / baseline if baseline else 0.0
+
+
+def cmd_runs(argv):
+    argparse.ArgumentParser(prog="slices runs", description="One row per recorded run, newest first.").parse_args(argv)
+    runs = read_runs()
+    if not runs:
+        print(dim(f"no runs recorded in {state_dir() / 'runs.jsonl'}"))
+        return 0
+    rows = []
+    for i, r in enumerate(runs, 1):
+        t = r["totals"]
+        whole = sum(1 for s in r["slices"] if s["ok"])
+        rows.append([
+            str(i), pst_stamp(r["startedAt"]), Path(r["tasksPath"]).name, r["model"], str(len(r["slices"])),
+            f"{whole}/{len(r['slices'])}", money(t["actual"]), money(t["est"]), money(t["baseline"]),
+            times(multiple_of(t["actual"], t["baseline"])),
+        ])
+
+    def style(col, cell):
+        if col == 3:
+            return paint(cell, "bold", "cyan")
+        if col == 5:
+            a, b = cell.strip().split("/")
+            return paint(cell, "green" if a == b else "red")
+        if col == 6:
+            return paint(cell, "bold")
+        if col == 9:
+            return paint(cell, "bold", multiple_style(float(cell.strip()[:-1])))
+        return cell
+
+    header = ["#", "date (PST)", "tasks", "model", "slices", "whole", "actual", "est", "baseline", "×"]
+    print("\n".join(render_table(header, rows, right={0, 4, 5, 6, 7, 8, 9}, style=style)))
+    return 0
+
+
+def usage_fallback(out: Path):
+    """Rebuild a run from the saved <id>.usage.json files when no record exists."""
+    returns = out / "_returns"
+    files = sorted(returns.glob("*.usage.json")) if returns.is_dir() else []
+    if not files:
+        fail(f"no run record and no usage files in {returns}")
+    slices, model, effort = [], None, None
+    for f in files:
+        rec = json.loads(f.read_text(encoding="utf-8"))
+        u = rec.get("usage") or {}
+        cid = f.name[: -len(".usage.json")]
+        ret = returns / f"{cid}.md"
+        cut = str(rec.get("finish", "")).lower() in ("length", "max_tokens")
+        empty = not ret.is_file() or not ret.read_text(encoding="utf-8").strip()
+        slices.append({
+            "id": cid, "ok": not cut and not empty,
+            "error": "cut off at the output cap" if cut else ("empty return" if empty else None),
+            "seconds": rec.get("seconds") or 0, "promptTokens": u.get("prompt_tokens"),
+            "completionTokens": u.get("completion_tokens"),
+            "reasoningTokens": (u.get("completion_tokens_details") or {}).get("reasoning_tokens"),
+            "cost": u.get("cost"), "est": None,
+        })
+        model, effort = model or rec.get("model"), effort or rec.get("effort")
+    return {"model": model, "effort": effort, "slices": slices, "outDir": str(out), "fromUsage": True}
+
+
+def cmd_status(argv):
+    ap = argparse.ArgumentParser(prog="slices status", description="Per-slice result of one run.")
+    ap.add_argument("run", help="a tasks file, its _out directory, or the index shown by `slices runs` (1 = newest)")
+    ref = ap.parse_args(argv).run
+    runs = read_runs()
+    record = None
+    if ref.isdigit() and not Path(ref).exists():
+        if not 1 <= int(ref) <= len(runs):
+            fail(f"no run {ref}; `slices runs` lists {len(runs)}")
+        record = runs[int(ref) - 1]
+        out = Path(record["outDir"])
+    else:
+        p = Path(ref).expanduser().resolve()
+        if p.is_file():
+            out = p.with_name(p.stem + "_out")
+            record = next((r for r in runs if Path(r["tasksPath"]).resolve() == p), None)
+        elif p.is_dir():
+            out = p
+        else:
+            fail(f"{ref} is not a tasks file, an _out directory or a run index")
+        record = record or next((r for r in runs if Path(r["outDir"]).resolve() == out), None)
+    record = record or usage_fallback(out)
+    slices = record["slices"]
+
+    print(paint(str(record["model"]), "bold", "cyan"))
+    bits = [f"effort {record['effort']}"]
+    if record.get("startedAt"):
+        bits.append(pst_stamp(record["startedAt"]) + " PST")
+    if record.get("maxTokens"):
+        bits.append(f"max out {record['maxTokens']:,}")
+    if record.get("fromUsage"):
+        bits.append("no run record, rebuilt from usage files")
+    print(dim(" · ".join(bits)))
+    print()
+    name_w = max(len(s["id"]) for s in slices)
+    for s in slices:
+        ret = Path(record["outDir"]) / "_returns" / f"{s['id']}.md"
+        print(
+            result_line(s["ok"], s["id"], name_w, s["seconds"], s["promptTokens"], s["completionTokens"],
+                        s["reasoningTokens"], s.get("error"), s["cost"], s["est"])
+            + "   " + dim(str(ret))
+        )
+    print()
+    whole = sum(1 for s in slices if s["ok"])
+    actual = sum(s["cost"] for s in slices if isinstance(s["cost"], (int, float)))
+    line = paint(f"{whole} of {len(slices)} whole", "bold", "green" if whole == len(slices) else "red")
+    line += dim(" · actual ") + paint(money(actual), "bold")
+    totals = record.get("totals")
+    if totals:
+        multiple = multiple_of(totals["actual"], totals["baseline"])
+        line += dim(f" · est {money(totals['est'])} · baseline {money(totals['baseline'])} · ")
+        line += paint(times(multiple), "bold", multiple_style(multiple))
+    print(line)
+    return 0
+
+
+def cmd_ledger(argv):
+    argparse.ArgumentParser(prog="slices ledger", description="The run ledger from references/runs.md, aligned.").parse_args(argv)
+    path = Path(__file__).resolve().parent.parent / "references" / "runs.md"
+    if not path.is_file():
+        fail(f"ledger not found: {path}")
+    table = [
+        [c.strip().replace("`", "").replace("**", "") for c in line.strip().strip("|").split("|")]
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.startswith("|")
+    ]
+    table = [row for row in table if not all(set(c) <= set("-: ") for c in row)]
+    if not table:
+        fail(f"no table in {path}")
+    print("\n".join(render_table(table[0], table[1:])))
+    return 0
+
+
+def build_parser(command: str):
+    sending = command == "send"
+    ap = argparse.ArgumentParser(
+        prog=f"slices {command}",
+        description=__doc__ if sending else "The cost screen for a tasks file with the same flags as send; sends nothing and writes nothing.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     ap.add_argument("tasks", type=Path, help="tasks file defining REPOS and TASKS")
     ap.add_argument("--model", required=True, help="exact provider model id")
     ap.add_argument("--effort", required=True, choices=["none", "low", "medium", "high"], help="reasoning.effort; none sends no reasoning field")
     ap.add_argument("--rates", type=rates, help="IN,OUT dollars per million tokens; overrides the live OpenRouter price, required for any other endpoint")
     ap.add_argument("--expect-out", required=True, type=int, help="expected tokens out per slice, file plus thinking, from the run ledger")
     ap.add_argument("--baseline", required=True, type=float, help="baseline dollars per slice from the run ledger")
-    ap.add_argument("--accept-multiple", type=float, default=MAX_MULTIPLE, help="the user's approved multiple of the baseline")
     ap.add_argument("--max-tokens", type=int, default=64000)
     ap.add_argument("--endpoint", default=OPENROUTER_ENDPOINT)
-    ap.add_argument("--key-env", default="OPENROUTER_API_KEY")
-    ap.add_argument("--output", type=Path, help="default: <tasks file stem>_out beside the tasks file")
     ap.add_argument("--only", help="comma-separated slice ids")
-    ap.add_argument("--files", action="store_true", help="list each slice's context files when sending (a dry run always lists them)")
-    ap.add_argument("--dry-run", action="store_true", help="write prompts, print the cost screen, send nothing")
-    args = ap.parse_args(argv)
-    sys.stdout.reconfigure(line_buffering=True)
-    signal.signal(signal.SIGINT, signal.default_int_handler)  # a shell may start us with SIGINT ignored; Ctrl-C must still cancel
+    if sending:
+        ap.add_argument("--accept-multiple", type=float, default=MAX_MULTIPLE, help="the user's approved multiple of the baseline")
+        ap.add_argument("--key-env", default="OPENROUTER_API_KEY")
+        ap.add_argument("--output", type=Path, help="default: <tasks file stem>_out beside the tasks file")
+        ap.add_argument("--files", action="store_true", help="list each slice's context files when sending (a dry run always lists them)")
+        ap.add_argument("--dry-run", action="store_true", help="write prompts, print the cost screen, send nothing")
+    return ap
 
+
+def prepare(args):
+    """Rates, tasks and prompts for send and show. Writes nothing; reads the price list only when no --rates is given."""
+    args.rate_think = None
     if args.rates:
         args.rate_in, args.rate_out = args.rates
-        source = "--rates" if args.endpoint == OPENROUTER_ENDPOINT else f"--rates \u00b7 {args.endpoint}"
+        args.rate_out_listed = args.rate_out
+        source = "--rates" if args.endpoint == OPENROUTER_ENDPOINT else f"--rates · {args.endpoint}"
     elif args.endpoint == OPENROUTER_ENDPOINT:
-        args.rate_in, args.rate_out, reasoning_rate = fetch_rates(args.model)
+        args.rate_in, args.rate_out, args.rate_think = fetch_rates(args.model)
+        args.rate_out_listed = args.rate_out
         source = f"OpenRouter {datetime.now(timezone.utc):%H:%M}Z"
-        if reasoning_rate and reasoning_rate > args.rate_out:
-            args.rate_out = reasoning_rate  # thinking is billed as output; price expected output at the higher rate
+        if args.rate_think and args.rate_think > args.rate_out:
+            args.rate_out = args.rate_think  # thinking is billed as output; price expected output at the higher rate
     else:
         fail(f"{args.endpoint} is not OpenRouter, so there is no live price list; pass --rates IN,OUT")
 
     repos, all_tasks, system = load_tasks(args.tasks.resolve())
-    out = (args.output or args.tasks.resolve().with_name(args.tasks.stem + "_out")).resolve()
+    out = (getattr(args, "output", None) or args.tasks.resolve().with_name(args.tasks.stem + "_out")).resolve()
     ids = args.only.split(",") if args.only else None
     tasks = [t for t in all_tasks if ids is None or t["custom_id"] in ids]
     if not tasks:
@@ -402,6 +628,22 @@ def main(argv=None):
     parts = {t["custom_id"]: context_parts(repos, t) for t in tasks}  # fails on a missing or over-cap context entry
     prompts = {t["custom_id"]: build_prompt(parts[t["custom_id"]], t) for t in tasks}
     estimates = {cid: estimate(p, args) for cid, p in prompts.items()}
+    return repos, system, out, tasks, parts, prompts, estimates, source
+
+
+def cmd_show(argv):
+    args = build_parser("show").parse_args(argv)
+    _, _, _, tasks, parts, prompts, estimates, source = prepare(args)
+    print_screen(args, tasks, parts, prompts, estimates, source, True)
+    return 0
+
+
+def cmd_send(argv):
+    args = build_parser("send").parse_args(argv)
+    sys.stdout.reconfigure(line_buffering=True)
+    signal.signal(signal.SIGINT, signal.default_int_handler)  # a shell may start us with SIGINT ignored; Ctrl-C must still cancel
+
+    repos, system, out, tasks, parts, prompts, estimates, source = prepare(args)
     worst = max(e / args.baseline for e in estimates.values())
 
     total, baseline_total = print_screen(args, tasks, parts, prompts, estimates, source, args.dry_run or args.files)
@@ -412,7 +654,7 @@ def main(argv=None):
             p = out / "_prompts" / f"{cid}.md"
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(prompt, encoding="utf-8")
-        print(paint("Dry run", "bold", "yellow") + dim(f" \u00b7 prompts in {out / '_prompts'} \u00b7 nothing sent"))
+        print(paint("Dry run", "bold", "yellow") + dim(f" · prompts in {out / '_prompts'} · nothing sent"))
         return 0
     if worst > args.accept_multiple:
         fail(f"worst slice is {worst:.1f}x the baseline; the user must approve that multiple (--accept-multiple {worst:.1f}) before sending")
@@ -423,11 +665,12 @@ def main(argv=None):
 
     pending = set(prompts)
     started = time.time()
+    started_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     done = threading.Event()
 
     def ticker():
         while not done.wait(20):
-            print(dim(f"  \u2026 {time.time() - started:.0f}s \u00b7 waiting on {', '.join(sorted(pending))}"), flush=True)
+            print(dim(f"  … {time.time() - started:.0f}s · waiting on {', '.join(sorted(pending))}"), flush=True)
 
     threading.Thread(target=ticker, daemon=True).start()
     name_w = max(len(t["custom_id"]) for t in tasks)
@@ -443,24 +686,16 @@ def main(argv=None):
             running += cost
             u = r["usage"]
             think = (u.get("completion_tokens_details") or {}).get("reasoning_tokens")
-            if r["ok"]:
-                mark = paint("\u2713", "bold", "green")
-                body = (
-                    paint(f"{k1(u.get('prompt_tokens')):>6} in", "cyan") + "   "
-                    + paint(f"{k1(u.get('completion_tokens')):>6} out", "magenta") + "   "
-                    + dim(f"{k1(think):>6} think")
-                )
-            else:
-                mark = paint("\u2717", "bold", "red")
-                body = paint(" ".join(str(r["error"]).split()).ljust(38), "red")
+            if not r["ok"]:
                 failed.append(cid)
-            secs = f"{r['seconds']:>3.0f}s"
             print(
-                f"  {mark} {paint(cid.ljust(name_w), 'bold')}   {dim(secs)}   {body}   "
-                f"{paint(money(cost), 'bold')}  {dim(f'(est {money(estimates[cid])})')}   {dim('total')} {paint(money(running), 'bold')}",
+                result_line(r["ok"], cid, name_w, r["seconds"], u.get("prompt_tokens"), u.get("completion_tokens"),
+                            think, r.get("error"), cost, estimates[cid])
+                + f"   {dim('total')} {paint(money(running), 'bold')}",
                 flush=True,
             )
     done.set()
+    finished_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
     actual = running
     multiple = actual / baseline_total
@@ -469,11 +704,11 @@ def main(argv=None):
     whole_count = sum(1 for r in results if r["ok"])
     print(
         paint(f"Done in {time.time() - started:.0f}s", "bold")
-        + dim(" \u00b7 ")
+        + dim(" · ")
         + paint(f"{whole_count} of {len(tasks)} whole", "bold", "green" if whole_count == len(tasks) else "red")
-        + dim(" \u00b7 actual ")
+        + dim(" · actual ")
         + paint(money(actual), "bold")
-        + dim(f" \u00b7 est {money(total)} \u00b7 baseline {money(baseline_total)} \u00b7 ")
+        + dim(f" · est {money(total)} · baseline {money(baseline_total)} · ")
         + paint(mult_text, "bold", multiple_style(multiple))
     )
     pst = datetime.now(ZoneInfo("America/Los_Angeles")).strftime("%Y-%m-%d")
@@ -483,12 +718,51 @@ def main(argv=None):
     names = ", ".join(sorted({p.name for p in repos.values()}))
     print(paint("Ledger row:", "bold"))
     print(
-        f"| {pst} | {names} \u00b7 `{args.tasks.name}` | `{args.model}` | {len(results)} | "
+        f"| {pst} | {names} · `{args.tasks.name}` | `{args.model}` | {len(results)} | "
         f"{pretty_range(billed_in) if billed_in else 'n/a'} | {pretty_range(returned) if returned else 'n/a'} | "
         f"{money(total)} | **actual {money(actual)}** ({money(actual / len(results))} per slice) | {whole} of {len(tasks)} whole |"
     )
-    print(dim(f"Usage files in {out / '_returns'}"))
+
+    by_id = {r["task"]["custom_id"]: r for r in results}
+    slice_records = []
+    for t in tasks:
+        r = by_id[t["custom_id"]]
+        u = r["usage"]
+        item = {"id": t["custom_id"], "ok": r["ok"]}
+        if not r["ok"]:
+            item["error"] = r["error"]
+        item.update({
+            "seconds": round(r["seconds"], 1), "promptTokens": u.get("prompt_tokens"),
+            "completionTokens": u.get("completion_tokens"),
+            "reasoningTokens": (u.get("completion_tokens_details") or {}).get("reasoning_tokens"),
+            "cost": actual_cost(u, args), "est": estimates[t["custom_id"]],
+        })
+        slice_records.append(item)
+    record_run({
+        "schema": "slices.run.v1", "startedAt": started_at, "finishedAt": finished_at,
+        "tasksPath": str(args.tasks.resolve()), "outDir": str(out), "model": args.model, "effort": args.effort,
+        "maxTokens": args.max_tokens,
+        "rates": {"in": args.rate_in, "out": args.rate_out_listed, "think": args.rate_think, "source": source},
+        "baselinePerSlice": args.baseline, "slices": slice_records,
+        "totals": {"actual": actual, "est": total, "baseline": baseline_total},
+    })
+    print(dim(f"Usage files in {out / '_returns'} · run recorded in {state_dir() / 'runs.jsonl'}"))
     return 1 if failed else 0
+
+
+COMMANDS = {"send": cmd_send, "show": cmd_show, "runs": cmd_runs, "status": cmd_status, "ledger": cmd_ledger}
+
+
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] in ("-h", "--help"):
+        print(USAGE)
+        return 0
+    if not argv or argv[0] not in COMMANDS:
+        print(USAGE, file=sys.stderr)
+        return 2
+    sys.stdout.reconfigure(line_buffering=True)
+    return COMMANDS[argv[0]](argv[1:])
 
 
 if __name__ == "__main__":

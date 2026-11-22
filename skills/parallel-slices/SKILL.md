@@ -13,7 +13,7 @@ You coordinate: prepare contracts, send independent text-only requests, then rev
 Every cheap run followed these. Breaking one is the user's decision, raised before any send with the cost beside the baseline's.
 
 1. **Baseline first.** Read [the run ledger](references/runs.md) before writing prompts. The most recent successful run with a comparable task is the baseline: its runner, input and output per slice, and cost.
-2. **One engine.** Send with `scripts/slices.py` in this skill's folder. Write a tasks file that holds only `REPOS`, `TASKS` and optionally `SYSTEM`. Do not copy, patch or replace the engine. If it lacks something, change the engine itself in the pi-workflows repository, in its own commit, and tell the user.
+2. **One engine.** Send with `scripts/slices.py` (`slices send`) in this skill's folder. Write a tasks file that holds only `REPOS`, `TASKS` and optionally `SYSTEM`. Do not copy, patch or replace the engine. If it lacks something, change the engine itself in the pi-workflows repository, in its own commit, and tell the user.
 3. **Excerpts, not whole files.** The engine refuses any context entry over 32 KB. Cut a large file to the lines the slice calls with `path#Lstart-end` and summarize the rest in the prompt. Past input was 4k–17k tokens per slice. Above twice the baseline's largest slice, get the user's OK.
 4. **Set thinking explicitly.** `--effort` is required. Use `low` for a model that bills reasoning as output unless the user chose otherwise; thinking shares `--max-tokens` with the returned file.
 5. **Estimate from real returns.** `--expect-out` is the ledger's returned size for comparable slices plus a thinking allowance. Rates come live from OpenRouter's model list and the engine prints them with the time; pass `--rates IN,OUT` only to override them or for another endpoint.
@@ -45,8 +45,10 @@ An independent reviewer, in a tab the user can watch, checks the prompts with [t
 ## Dispatch
 
 ```bash
-python3 <skill>/scripts/slices.py TASKS.py --model <id> --effort low --expect-out <tokens> --baseline <usd> --dry-run
+slices send TASKS.py --model <id> --effort low --expect-out <tokens> --baseline <usd> --dry-run
 ```
+
+`slices` is `python3 <skill>/scripts/slices.py`; use that path on a machine without the shim. Read-only, never send or write: `slices show TASKS.py <same flags>` (cost screen), `slices runs`, `slices status <run>` (per slice, from a tasks file, its `_out` dir or an index from `runs`), `slices ledger`.
 
 Drop `--dry-run` to send. The engine prints the cost screen (each context entry's bytes, tokens in, estimate, multiple of the baseline) and counts down 30 s before the first request; read it and stop it with Ctrl-C if the numbers are off. Add `--only <ids>` for a pilot, retry or follow-up slice. The engine sends each slice as one completion request with no tools (Omit tools and tool execution entirely), prints the endpoint and model but never the key, retries transient errors a bounded number of times, stages returns in `<tasks>_out/` with the raw text and `<id>.usage.json`, prints one line per return with its cost and running total, plus a waiting line every 20 seconds, treats empty, cut-off and incomplete returns as failures, and exits nonzero if any slice failed. It never executes generated output. Send only context permitted for that service and no secrets. Match `SYSTEM` to the return format. A timed-out request may still be billed.
 
