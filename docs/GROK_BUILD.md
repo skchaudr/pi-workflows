@@ -134,14 +134,15 @@ the file name is passed to the run as its task or its JSON input.
 3. At the gate, a question with one line per choice. Move with `↑`/`↓` and press `Enter` to answer.
    The run continues in the same turn.
 4. The remaining steps, one card each.
-5. A last line: `✓ mixed finished in 55s`, or `✗ mixed failed: …`.
+5. A last line: `✓ mixed finished in 55s`, `✗ mixed failed: …`, or `✗ mixed cancelled (…)`.
 
 Other things you can do during a run:
 
 - **Leave the gate for later:** press `Shift+x`. The run stays parked at the gate. Answer it later
   with `/answer <label>`, for example `/answer continue`, or from the runs pop-up.
 - **Cancel the run:** press `Ctrl+c`, then `Enter` on "Stop running". The run is cancelled on the
-  server as well, and the last line reads `✗ mixed failed: cancelled (Workflow run cancelled)`.
+  server as well, and the last lines read `✗ mixed cancelled (Workflow run cancelled)` and
+  `Turn cancelled.` This also works while the gate question is open.
 
 ## Inspect runs
 
