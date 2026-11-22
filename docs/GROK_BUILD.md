@@ -5,7 +5,7 @@ the finished run. Steps can run on Grok, Claude, or Pi in one workflow. Grok Bui
 fork that ships the `grok-fork` pager and the `grok-acpx-acp` driver.
 
 The commands and keys on this page were run on 2026-11-22 against pi-workflows `2fb32f5` and the
-fork at `20aedddf`. `/open` was not tried.
+fork at `20aedddf`.
 
 ## Before you start
 
@@ -160,12 +160,12 @@ wrote.
 
 The driver also answers these commands in the prompt:
 
-| Command            | Does                                    |
-| ------------------ | --------------------------------------- |
-| `/runs`            | List recent acpx flow runs              |
-| `/open <run id>`   | Replay an existing run into the session |
-| `/answer <choice>` | Answer a waiting gate                   |
-| `/acpx-help`       | Show the command list                   |
+| Command            | Does                                              |
+| ------------------ | ------------------------------------------------- |
+| `/runs`            | List recent acpx flow runs                        |
+| `/open <run id>`   | Replay an existing acpx flow run into the session |
+| `/answer <choice>` | Answer a waiting gate                             |
+| `/acpx-help`       | Show the command list                             |
 
 To watch the same runs from another terminal, use the [`piw` viewer](TUI_VIEWER.md):
 
@@ -181,6 +181,8 @@ piw
 - Answering the gate makes the transcript jump down and back up once.
 - In a terminal narrower than about 100 columns the diagram is replaced by its source text.
 - Step cards and the tray call a step a "subagent".
+- `/runs` and `/open` only know acpx flow runs. A pi-workflows run is not listed by `/runs`, and
+  `/open` answers `Run … not found` for its id. Use `/acpx` or `piw` for those.
 
 ## When the server refuses to start after an update
 
