@@ -296,6 +296,34 @@ describe("workflow run queue in canonical SQLite", () => {
     store.close();
   });
 
+  it("keeps a headless run's origin session visible in run views while routing stays sessionless", async () => {
+    const { store } = await setup();
+    try {
+      const options = {
+        ...runPreparation(),
+        originSessionId: "session-cli",
+        executionMode: "headless" as const,
+      };
+      store.reserveWorkflowRun({ ...options, runId: "headless-run" });
+      reserve(store);
+      const views = store.listWorkflowRunViews({ offset: 0, limit: 10 });
+      const byId = new Map(views.runs.map((run) => [run.runId, run]));
+      expect(byId.get("headless-run")).toMatchObject({
+        originSessionId: "session-cli",
+        executionMode: "headless",
+      });
+      expect(byId.get("run-1")).toMatchObject({
+        originSessionId: "session-1",
+        executionMode: "interactive",
+      });
+      // The internal record still treats a headless run as sessionless: the
+      // runner picks the headless executor by that fact.
+      expect(store.getWorkflowRun("headless-run")?.originSessionId).toBeNull();
+    } finally {
+      store.close();
+    }
+  });
+
   it("takes a short control claim without changing queue status", async () => {
     const { store } = await setup();
     reserve(store, "control-run");

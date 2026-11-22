@@ -270,7 +270,10 @@ function workflowRunViewRecord(row: WorkflowRunViewRow): WorkflowRunQueueViewRec
     runStateStatus: row.runStatus,
     paused: row.paused === 1,
     status: row.status,
-    originSessionId: row.executionMode === "headless" ? null : row.originSessionId,
+    // A headless run does not hold the session reservation, but it still names the
+    // session it was started for, so watchers can find the run's session. The
+    // reservation columns alone stay null for headless runs.
+    originSessionId: row.originSessionId,
     executionMode: row.executionMode,
     parentRunId: row.parentRunId,
     rootRunId: row.rootRunId,
