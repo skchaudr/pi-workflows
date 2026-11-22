@@ -252,12 +252,27 @@ def pretty_range(values) -> str:
 TTY = sys.stdout.isatty()
 
 
+CODES = {"bold": "1", "dim": "2", "red": "31", "green": "32", "yellow": "33", "blue": "34", "magenta": "35", "cyan": "36"}
+
+
+def paint(text: str, *styles: str) -> str:
+    """Wrap text in ANSI styles when stdout is a terminal; pad before painting so columns stay aligned."""
+    if not TTY or not styles:
+        return text
+    return f"\x1b[{';'.join(CODES[x] for x in styles)}m{text}\x1b[0m"
+
+
 def dim(text: str) -> str:
-    return f"\x1b[2m{text}\x1b[0m" if TTY else text
+    return paint(text, "dim")
 
 
 def red(text: str) -> str:
-    return f"\x1b[31m{text}\x1b[0m" if TTY else text
+    return paint(text, "red")
+
+
+def multiple_style(multiple: float) -> str:
+    """Green at or under the baseline, yellow up to the 2x limit, red past it."""
+    return "green" if multiple <= 1.0 else "yellow" if multiple <= MAX_MULTIPLE else "red"
 
 
 def plural(n: int, word: str) -> str:
@@ -270,9 +285,12 @@ def times(multiple: float) -> str:
 
 def print_screen(args, tasks, parts, prompts, estimates, source, show_files):
     """The cost screen: one header line, one row per slice, a total row against the baseline."""
+    print(paint(args.model, "bold", "cyan"))
     print(
-        f"{args.model} \u00b7 effort {args.effort} \u00b7 max out {args.max_tokens:,} \u00b7 "
-        f"${args.rate_in:g} in / ${args.rate_out:g} out per M \u00b7 {source}"
+        dim(
+            f"effort {args.effort} \u00b7 max out {args.max_tokens:,} \u00b7 "
+            f"${args.rate_in:g} in / ${args.rate_out:g} out per M \u00b7 {source}"
+        )
     )
     print()
     total, baseline_total = sum(estimates.values()), args.baseline * len(tasks)
@@ -295,16 +313,22 @@ def print_screen(args, tasks, parts, prompts, estimates, source, show_files):
     wf, wk = max(len(r[1]) for r in everything), max(len(r[2]) for r in everything)
     wc = max(wf + 2 + wk, len("context"))
     wi, wo, we = (max(len(r[i]) for r in everything + [head]) for i in (3, 4, 5))
-    wm = max(len(times(r[6])) for r in everything + [[0] * 6 + [0.0]] if isinstance(r[6], float))
-    wm = max(wm, len(head[6]))
+    wm = max(max(len(times(r[6])) for r in everything), len(head[6]))
 
-    def line(row, header=False):
-        ctx = "context" if header else row[1].ljust(wf) + "  " + row[2].rjust(wk)
-        mult = row[6] if header else times(row[6])
-        cell = mult.rjust(wm)
-        if not header and row[6] > MAX_MULTIPLE:
-            cell = red(cell)
-        return f"  {row[0].ljust(wn)}  {ctx.ljust(wc)}   {row[3].rjust(wi)}   {row[4].rjust(wo)}   {row[5].rjust(we)}   {cell}"
+    def line(row, header=False, total=False):
+        if header:
+            cells = [row[0].ljust(wn), "context".ljust(wc), row[3].rjust(wi), row[4].rjust(wo), row[5].rjust(we), row[6].rjust(wm)]
+            return "  " + "   ".join(dim(c) for c in cells).replace(dim(cells[0]) + "   ", dim(cells[0]) + "  ", 1)
+        name = paint(row[0].ljust(wn), "bold")
+        ctx = dim(row[1].ljust(wf) + "  " + row[2].rjust(wk)).ljust(wc + (len(dim("")) if TTY else 0))
+        weight = ("bold",) if total else ()
+        cells = [
+            paint(row[3].rjust(wi), *weight, "cyan"),
+            paint(row[4].rjust(wo), *weight, "magenta"),
+            paint(row[5].rjust(we), "bold"),
+            paint(times(row[6]).rjust(wm), "bold", multiple_style(row[6])),
+        ]
+        return f"  {name}  {ctx}   " + "   ".join(cells)
 
     header = line(head, header=True)
     print(header)
@@ -315,8 +339,8 @@ def print_screen(args, tasks, parts, prompts, estimates, source, show_files):
             pad = max((len(e) for e, _ in entries), default=0)
             for e, n in entries:
                 print(dim(f"    {e.ljust(pad)}   {n / 1024:.1f} KB"))
-    print("  " + "\u2500" * (len(header) - 2))
-    print(line(total_row) + f"   baseline {money(baseline_total)}")
+    print(dim("  " + "\u2500" * (wn + 2 + wc + 3 + wi + 3 + wo + 3 + we + 3 + wm)))
+    print(line(total_row, total=True) + dim(f"   baseline {money(baseline_total)}"))
     return total, baseline_total
 
 
@@ -326,12 +350,12 @@ def countdown(est: float):
         for left in range(COUNTDOWN_SECONDS, 0, -1):
             line = f"Sending in {left}s \u00b7 est {money(est)} \u00b7 Ctrl-C to cancel"
             if TTY:
-                print(f"\r{line}\x1b[K", end="", flush=True)
+                print(f"\r{paint(f'Sending in {left}s', 'bold', 'yellow')}{dim(f' \u00b7 est {money(est)} \u00b7 Ctrl-C to cancel')}\x1b[K", end="", flush=True)
             elif left % 10 == 0:
                 print(line, flush=True)
             time.sleep(1)
     except KeyboardInterrupt:
-        print(("\n" if TTY else "") + "Cancelled \u00b7 nothing sent", flush=True)
+        print(("\n" if TTY else "") + paint("Cancelled", "bold", "yellow") + dim(" \u00b7 nothing sent"), flush=True)
         sys.exit(130)
     if TTY:
         print(flush=True)
@@ -388,7 +412,7 @@ def main(argv=None):
             p = out / "_prompts" / f"{cid}.md"
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(prompt, encoding="utf-8")
-        print(f"Dry run \u00b7 prompts in {out / '_prompts'} \u00b7 nothing sent")
+        print(paint("Dry run", "bold", "yellow") + dim(f" \u00b7 prompts in {out / '_prompts'} \u00b7 nothing sent"))
         return 0
     if worst > args.accept_multiple:
         fail(f"worst slice is {worst:.1f}x the baseline; the user must approve that multiple (--accept-multiple {worst:.1f}) before sending")
@@ -420,35 +444,50 @@ def main(argv=None):
             u = r["usage"]
             think = (u.get("completion_tokens_details") or {}).get("reasoning_tokens")
             if r["ok"]:
-                mark = "\u2713"
-                body = f"{k1(u.get('prompt_tokens')):>6} in   {k1(u.get('completion_tokens')):>6} out   {k1(think):>6} think"
+                mark = paint("\u2713", "bold", "green")
+                body = (
+                    paint(f"{k1(u.get('prompt_tokens')):>6} in", "cyan") + "   "
+                    + paint(f"{k1(u.get('completion_tokens')):>6} out", "magenta") + "   "
+                    + dim(f"{k1(think):>6} think")
+                )
             else:
-                mark = red("\u2717")
-                body = " ".join(str(r["error"]).split()).ljust(38)
+                mark = paint("\u2717", "bold", "red")
+                body = paint(" ".join(str(r["error"]).split()).ljust(38), "red")
                 failed.append(cid)
-            print(f"  {mark} {cid.ljust(name_w)}   {r['seconds']:>3.0f}s   {body}   {money(cost)}  (est {money(estimates[cid])})   total {money(running)}", flush=True)
+            secs = f"{r['seconds']:>3.0f}s"
+            print(
+                f"  {mark} {paint(cid.ljust(name_w), 'bold')}   {dim(secs)}   {body}   "
+                f"{paint(money(cost), 'bold')}  {dim(f'(est {money(estimates[cid])})')}   {dim('total')} {paint(money(running), 'bold')}",
+                flush=True,
+            )
     done.set()
 
     actual = running
     multiple = actual / baseline_total
     mult_text = times(multiple)
     print()
+    whole_count = sum(1 for r in results if r["ok"])
     print(
-        f"Done in {time.time() - started:.0f}s \u00b7 {sum(1 for r in results if r['ok'])} of {len(tasks)} whole \u00b7 actual {money(actual)} \u00b7 "
-        f"est {money(total)} \u00b7 baseline {money(baseline_total)} \u00b7 {red(mult_text) if multiple > MAX_MULTIPLE else mult_text}"
+        paint(f"Done in {time.time() - started:.0f}s", "bold")
+        + dim(" \u00b7 ")
+        + paint(f"{whole_count} of {len(tasks)} whole", "bold", "green" if whole_count == len(tasks) else "red")
+        + dim(" \u00b7 actual ")
+        + paint(money(actual), "bold")
+        + dim(f" \u00b7 est {money(total)} \u00b7 baseline {money(baseline_total)} \u00b7 ")
+        + paint(mult_text, "bold", multiple_style(multiple))
     )
     pst = datetime.now(ZoneInfo("America/Los_Angeles")).strftime("%Y-%m-%d")
     billed_in = [r["usage"].get("prompt_tokens") for r in results if r["usage"].get("prompt_tokens")]
     returned = [r["returned_tokens"] for r in results if r["returned_tokens"]]
     whole = sum(1 for r in results if r["ok"])
     names = ", ".join(sorted({p.name for p in repos.values()}))
-    print("Ledger row:")
+    print(paint("Ledger row:", "bold"))
     print(
         f"| {pst} | {names} \u00b7 `{args.tasks.name}` | `{args.model}` | {len(results)} | "
         f"{pretty_range(billed_in) if billed_in else 'n/a'} | {pretty_range(returned) if returned else 'n/a'} | "
         f"{money(total)} | **actual {money(actual)}** ({money(actual / len(results))} per slice) | {whole} of {len(tasks)} whole |"
     )
-    print(f"Usage files in {out / '_returns'}")
+    print(dim(f"Usage files in {out / '_returns'}"))
     return 1 if failed else 0
 
 

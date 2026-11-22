@@ -88,7 +88,7 @@ describe("parallel-slices engine", () => {
     const result = run([await tasksFile("r:big.ts#L1-100"), ...flags, "--dry-run"]);
     expect(result.status).toBe(0);
     expect(result.stdout).toContain(
-      "test/model · effort low · max out 64,000 · $2 in / $10 out per M · --rates",
+      "test/model\neffort low · max out 64,000 · $2 in / $10 out per M · --rates",
     );
     expect(result.stdout).toMatch(/slice\s+context\s+in\s+out\s+est\s+× base/);
     expect(result.stdout).toMatch(/\n {2}a\s+1 file {2}1 KB\s+414\s+15\.0k\s+\$0\.15\s+0\.9×/);
