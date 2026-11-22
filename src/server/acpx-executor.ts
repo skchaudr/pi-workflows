@@ -3,11 +3,13 @@ import { fileURLToPath } from "node:url";
 import type {
   AcpProcessLifecycle,
   AcpRuntimeEnsureInput,
+  AcpRuntimeEvent,
   AcpRuntimeHandle,
   AcpRuntimeTurn,
   AcpRuntimeTurnInput,
   AcpRuntimeTurnResult,
 } from "acpx/runtime";
+import type { StepActivityBody } from "../state/step-activity.js";
 import { CancelledError, errorMessage } from "../workflows/errors.js";
 import {
   parseWorkflowSubmissionInput,
@@ -26,6 +28,7 @@ import {
 } from "./acpx-submission-channel.js";
 import { MAX_SUBMISSION_REMINDERS } from "./recovery.js";
 import type { SupervisedProcessRegistry } from "./rpc-executor.js";
+import { stepActivityFromAcpx } from "./step-activity.js";
 
 // Production resolves the compiled .js; tests and dev checkouts run the .ts source, which node
 // type-strips (the script imports nothing from the package).
@@ -243,7 +246,7 @@ class AcpxStep {
       requestId: `${this.request.contract.attemptId}:${++this.turnCount}`,
     });
     this.turn = turn;
-    const finished = finishTurn(turn);
+    const finished = finishTurn(turn, this.request.onActivity);
     finished.catch(() => undefined);
     const outcome = await Promise.race([finished, this.settled]);
     if (this.failure !== undefined) throw this.failure;
@@ -401,14 +404,33 @@ function reminderPrompt(request: AgentStepRequest): string {
   ].join("\n");
 }
 
-/** Drain a turn's events, then return its canonical result. */
-async function finishTurn(turn: AcpRuntimeTurn): Promise<AcpRuntimeTurnResult> {
+/** Drain a turn's events, mapping the visible ones to `onActivity`, then return its canonical result. */
+async function finishTurn(
+  turn: AcpRuntimeTurn,
+  onActivity: ((body: StepActivityBody) => void) | undefined,
+): Promise<AcpRuntimeTurnResult> {
   try {
-    for await (const event of turn.events) void event;
+    for await (const event of turn.events) {
+      reportTurnEvent(onActivity, event);
+    }
   } catch {
     // The turn result below is the canonical outcome.
   }
   return await turn.result;
+}
+
+/** Live activity must never fail a step, whatever the callback does. */
+function reportTurnEvent(
+  onActivity: ((body: StepActivityBody) => void) | undefined,
+  event: AcpRuntimeEvent,
+): void {
+  if (onActivity === undefined) return;
+  try {
+    const body = stepActivityFromAcpx(event);
+    if (body !== undefined) onActivity(body);
+  } catch {
+    // Activity is best-effort reporting.
+  }
 }
 
 function abortReason(signal: AbortSignal): unknown {

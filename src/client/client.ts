@@ -48,7 +48,11 @@ type PendingRequest = {
 };
 
 type Subscription = {
-  operation: "view.runs.watch" | "view.run.watch" | "view.session.watch";
+  operation:
+    | "view.runs.watch"
+    | "view.run.watch"
+    | "view.run.activity.watch"
+    | "view.session.watch";
   runId?: string;
   payload: JsonValue;
   listener: (event: ClientEvent) => void;
@@ -193,6 +197,28 @@ export class WorkflowClient {
       {
         subscriptionId: options.subscriptionId ?? randomUUID(),
         ...(options.revision === undefined ? {} : { revision: options.revision }),
+      },
+      listener,
+    );
+  }
+
+  /**
+   * Watch a run's live step activity. The listener receives `step_activity`
+   * events in `seq` order; a payload carrying `"reset": true` tells the caller
+   * to discard the activity it holds for the run before applying that event.
+   * The returned function stops the watch.
+   */
+  async watchRunActivity(
+    runId: string,
+    listener: (event: ClientEvent) => void,
+    options: { subscriptionId?: string; afterSeq?: number } = {},
+  ): Promise<() => Promise<void>> {
+    return await this.subscribe(
+      "view.run.activity.watch",
+      runId,
+      {
+        subscriptionId: options.subscriptionId ?? randomUUID(),
+        afterSeq: options.afterSeq ?? 0,
       },
       listener,
     );
@@ -540,7 +566,10 @@ export class WorkflowClient {
       if (!this.subscriptions.delete(subscriptionId)) return;
       if (this.socket !== null && !this.socket.destroyed) {
         await this.request({
-          operation: "view.run.unwatch",
+          operation:
+            operation === "view.run.activity.watch"
+              ? "view.run.activity.unwatch"
+              : "view.run.unwatch",
           ...(runId === undefined ? {} : { runId }),
           payload: { subscriptionId },
         });
@@ -657,6 +686,21 @@ export class WorkflowClient {
                 ...subscription.payload,
                 revision: message.payload.revision as number,
               };
+            }
+            if (
+              subscription !== undefined &&
+              subscription.operation === "view.run.activity.watch" &&
+              isRecord(subscription.payload) &&
+              isRecord(message.payload) &&
+              Array.isArray(message.payload.activities)
+            ) {
+              const last = message.payload.activities.at(-1);
+              if (isRecord(last) && Number.isSafeInteger(last.seq)) {
+                subscription.payload = {
+                  ...subscription.payload,
+                  afterSeq: last.seq as number,
+                };
+              }
             }
             if (subscription !== undefined) {
               void this.deliverSubscriptionEvent(subscription, message).catch(() => {

@@ -900,6 +900,47 @@ Workflow runs and resource-manager reconciles share one workflow server schedule
 
 One unfinished interactive run reserves its origin Pi session, including while waiting or paused. Independent headless work does not reserve that session.
 
+## Live step activity
+
+While an `agent` step runs, its executor reports live activity: chunks of the
+model's answer text, its thinking, status lines, and whole tool-call states.
+Activity is a best-effort live view. It is never persisted, never recorded in
+the runner message log, and never changes a run revision. After a server
+restart, or once a run reaches a final state, the server may remember none of
+it, and a late watcher is told so with a reset.
+
+The wire carries it in two steps:
+
+1. The runner batches the step's activity (`StepActivityBatcher` in
+   `src/server/step-activity.ts`) and sends each batch to the server as one
+   side-channel runner message (`activity.publish`, like `process.register`:
+   not recorded, not replayed, no revision check). The executors map their
+   events through `stepActivityFromAcpx` (steps on acpx agents) or
+   `stepActivityFromPiRpc` and the step's `onActivity` callback (headless Pi
+   children). A callback that throws never fails the step.
+2. The server numbers each body per run (`StepActivityHub`): `seq` starts at 1
+   and increases by exactly 1 across all attempts. Clients watch it with the
+   `view.run.activity.watch` operation (payload `{ subscriptionId, afterSeq }`)
+   and receive `step_activity` events carrying `{ activities: [...] }`, first
+   everything remembered after `afterSeq`, then live, in `seq` order. Each frame
+   stays under the 1 MiB client limit: a large burst splits across several
+   events. When the client's `afterSeq` is greater than the newest seq the
+   server holds, the first event of the watch carries `"reset": true` in its
+   payload and numbering starts again from 1; the client discards what it
+   holds before applying it. `view.run.activity.unwatch` ends the watch, as
+   does closing the connection. The TypeScript client offers both through
+   `WorkflowClient.watchRunActivity`.
+
+One `StepActivity` is
+`{ schema: "pi-workflows.step-activity.v1", runId, nodeId, attemptId, seq, at,
+kind: "text" | "thought" | "status" | "tool", text, tool? }`. `text` and
+`thought` chunks are appended to the earlier chunks of the attempt; `status`
+replaces the attempt's previous status line; a `tool` record carries the whole
+current state of one tool call, sent again each time the call changes. `tool`
+is present exactly when `kind` is `"tool"`. A tool body too large for a frame
+is shortened and marked `truncated: true`; the complete payload stays in the
+agent's own session record.
+
 ## The step contract
 
 Every `agent` prompt ends with a step contract block naming the workflow, the

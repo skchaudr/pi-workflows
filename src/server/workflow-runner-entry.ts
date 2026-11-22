@@ -4,6 +4,7 @@ import { once } from "node:events";
 import { fileURLToPath } from "node:url";
 import { builtinWorkflowCatalog } from "../builtins/catalog.js";
 import { canonicalJson, parseJson, type JsonValue } from "../state/json.js";
+import type { StepActivityBody } from "../state/step-activity.js";
 import { compositionMetadata } from "../workflows/composition.js";
 import { WorkflowEngine } from "../workflows/engine.js";
 import {
@@ -29,6 +30,7 @@ import {
 } from "./agent-routing-executor.js";
 import { RpcStepExecutor, type SupervisedProcessRegistry } from "./rpc-executor.js";
 import type { WorkflowRunnerLaunchEnvelope } from "./state.js";
+import { StepActivityBatcher } from "./step-activity.js";
 import { materializeRunnerContent } from "./workflow-runner-content.js";
 import {
   MAX_WORKFLOW_RUNNER_PROTOCOL_MESSAGE_BYTES,
@@ -281,6 +283,74 @@ function runnerProcessRegistry(transport: StdioRunnerTransport): SupervisedProce
   };
 }
 
+/** One step's live activity, batched into frame-safe side-channel messages. */
+type StepActivitySender = (
+  key: { nodeId: string; attemptId: string },
+  bodies: StepActivityBody[],
+) => void;
+
+function stepActivitySender(transport: StdioRunnerTransport): StepActivitySender {
+  return (key, bodies) => {
+    // Fire and forget: activity is never allowed to fail a step, and a lost
+    // transport drops only the live view, not the step's result.
+    void transport
+      .request({
+        messageId: randomUUID(),
+        operation: "activity.publish",
+        kind: "runner.progress",
+        expectedRevision: 0,
+        attemptId: key.attemptId,
+        payload: {
+          nodeId: key.nodeId,
+          attemptId: key.attemptId,
+          bodies: bodies as unknown as JsonValue,
+        },
+      })
+      .catch(() => undefined);
+  };
+}
+
+/** Wraps the run's executor so each step's `onActivity` reaches the server as batched activity. */
+class ActivityReportingExecutor implements AgentStepExecutor {
+  readonly assistantMessageMode?: "visible" | "park" | "unsupported";
+  readonly preservesActiveTimeBudget?: boolean;
+  readonly enforcesToolAllowlist?: boolean;
+
+  constructor(
+    private readonly inner: AgentStepExecutor,
+    private readonly send: StepActivitySender,
+  ) {
+    const { assistantMessageMode, preservesActiveTimeBudget, enforcesToolAllowlist } = inner;
+    if (assistantMessageMode !== undefined) this.assistantMessageMode = assistantMessageMode;
+    if (preservesActiveTimeBudget !== undefined) {
+      this.preservesActiveTimeBudget = preservesActiveTimeBudget;
+    }
+    if (enforcesToolAllowlist !== undefined) this.enforcesToolAllowlist = enforcesToolAllowlist;
+  }
+
+  async runAgentStep(request: AgentStepRequest, signal: AbortSignal): Promise<AgentStepSubmission> {
+    const { nodeId, attemptId } = request.contract;
+    const batcher = new StepActivityBatcher({
+      emit: (bodies) => this.send({ nodeId, attemptId }, bodies),
+    });
+    const reported: AgentStepRequest = {
+      ...request,
+      onActivity: (body: StepActivityBody) => {
+        try {
+          batcher.push(body);
+        } catch {
+          // A throwing batcher must never fail the step.
+        }
+      },
+    };
+    try {
+      return await this.inner.runAgentStep(reported, signal);
+    } finally {
+      batcher.close();
+    }
+  }
+}
+
 function interactionSubmission(payload: JsonValue): AgentStepSubmission {
   if (
     typeof payload === "object" &&
@@ -407,7 +477,10 @@ export async function runWorkflowRunner(): Promise<number> {
         registry,
       }),
     );
-    const executor: AgentStepExecutor = routing;
+    const executor: AgentStepExecutor = new ActivityReportingExecutor(
+      routing,
+      stepActivitySender(transport),
+    );
     const closeAll = async () => {
       await routing.close();
       await closeRunExecutor?.();

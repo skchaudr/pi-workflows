@@ -1,6 +1,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
+import type { StepActivityBody } from "../state/step-activity.js";
 import { errorMessage } from "../workflows/errors.js";
 import type {
   AgentStepExecutor,
@@ -8,6 +9,7 @@ import type {
   AgentStepSubmission,
 } from "../workflows/types.js";
 import { RPC_SUBMISSION_PREFIX } from "./rpc-bridge.js";
+import { JsonlRecordReader, stepActivityFromPiRpc } from "./step-activity.js";
 
 // Production resolves the compiled .js; tests and dev checkouts load the .ts
 // source, which pi compiles itself when loading extensions.
@@ -69,6 +71,9 @@ export class RpcStepExecutor implements AgentStepExecutor {
   private actions: StepAction[] = [];
   private submissionWaiters: Array<() => void> = [];
   private stdoutBuffer = "";
+  private readonly stdoutRecords = new JsonlRecordReader();
+  /** The activity callback of the step currently running, when one is. */
+  private currentActivity: ((body: StepActivityBody) => void) | undefined;
   private registeredPid: number | null = null;
   private closePromise: Promise<void> | null = null;
 
@@ -79,20 +84,25 @@ export class RpcStepExecutor implements AgentStepExecutor {
 
   async runAgentStep(request: AgentStepRequest, signal: AbortSignal): Promise<AgentStepSubmission> {
     await this.ensureStarted();
-    let prompt = request.prompt;
-    for (;;) {
-      throwIfAborted(signal);
-      const submission = await this.promptForSubmission(prompt, request, signal);
-      const accepted = await request.accept(submission.output);
-      if (accepted.ok) {
-        return { output: accepted.value };
+    this.currentActivity = request.onActivity;
+    try {
+      let prompt = request.prompt;
+      for (;;) {
+        throwIfAborted(signal);
+        const submission = await this.promptForSubmission(prompt, request, signal);
+        const accepted = await request.accept(submission.output);
+        if (accepted.ok) {
+          return { output: accepted.value };
+        }
+        prompt = [
+          `The workflow rejected your submission for step ${JSON.stringify(request.contract.nodeId)}:`,
+          accepted.error,
+          "",
+          "Call the `workflow` tool again with a corrected output.",
+        ].join("\n");
       }
-      prompt = [
-        `The workflow rejected your submission for step ${JSON.stringify(request.contract.nodeId)}:`,
-        accepted.error,
-        "",
-        "Call the `workflow` tool again with a corrected output.",
-      ].join("\n");
+    } finally {
+      this.currentActivity = undefined;
     }
   }
 
@@ -212,9 +222,11 @@ export class RpcStepExecutor implements AgentStepExecutor {
       this.wakeSubmissionWaiters();
     });
     // stdout carries the RPC event stream. The submission channel is stderr,
-    // so stdout is only drained to keep the pipe from blocking.
+    // so stdout is drained to keep the pipe from blocking, kept as a bounded
+    // diagnostic tail, and parsed into live step activity for the running step.
     child.stdout?.on("data", (chunk: Buffer) => {
       this.stdoutBuffer = (this.stdoutBuffer + chunk.toString("utf8")).slice(-64 * 1024);
+      this.reportRpcActivity(this.stdoutRecords.push(chunk));
     });
     if (child.pid !== undefined && this.options.registry !== undefined) {
       try {
@@ -224,6 +236,21 @@ export class RpcStepExecutor implements AgentStepExecutor {
         killGroup(child.pid, "SIGKILL");
         this.child = null;
         throw error;
+      }
+    }
+  }
+
+  /** Pi RPC records belong to whichever step is running; between steps there is none. */
+  private reportRpcActivity(records: unknown[]): void {
+    const onActivity = this.currentActivity;
+    if (onActivity === undefined) return;
+    for (const record of records) {
+      const body = stepActivityFromPiRpc(record);
+      if (body === undefined) continue;
+      try {
+        onActivity(body);
+      } catch {
+        // Live activity must never fail a step.
       }
     }
   }

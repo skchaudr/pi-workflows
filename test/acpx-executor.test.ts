@@ -5,6 +5,7 @@ import path from "node:path";
 import { createInterface } from "node:readline";
 import type {
   AcpRuntimeEnsureInput,
+  AcpRuntimeEvent,
   AcpRuntimeHandle,
   AcpRuntimeTurn,
   AcpRuntimeTurnInput,
@@ -20,6 +21,7 @@ import {
 } from "../src/server/acpx-executor.js";
 import { SubmissionChannel } from "../src/server/acpx-submission-channel.js";
 import { MAX_SUBMISSION_REMINDERS } from "../src/server/recovery.js";
+import type { StepActivityBody } from "../src/state/step-activity.js";
 import { CancelledError, isAbortLikeError } from "../src/workflows/errors.js";
 import { WorkflowSubmissionToolParameters } from "../src/workflows/tool-input.js";
 import type { AgentStepExecutor, AgentStepRequest } from "../src/workflows/types.js";
@@ -90,7 +92,11 @@ class FakeRuntime implements AcpxStepRuntime {
   constructor(
     readonly input: AcpxRuntimeFactoryInput,
     private readonly behaviours: Behaviour[],
-    private readonly options: { failModel?: string; failTurn?: string } = {},
+    private readonly options: {
+      failModel?: string;
+      failTurn?: string;
+      events?: AcpRuntimeEvent[];
+    } = {},
   ) {}
 
   async ensureSession(input: AcpRuntimeEnsureInput): Promise<AcpRuntimeHandle> {
@@ -105,6 +111,7 @@ class FakeRuntime implements AcpxStepRuntime {
 
   startTurn(input: AcpRuntimeTurnInput): AcpRuntimeTurn {
     const index = this.texts.push(input.text) - 1;
+    const turnEvents = this.options.events ?? [];
     let cancel: () => void = () => undefined;
     const cancelled = new Promise<AcpRuntimeTurnResult>((resolve) => {
       cancel = () => resolve({ status: "cancelled", stopReason: "cancelled" });
@@ -112,7 +119,9 @@ class FakeRuntime implements AcpxStepRuntime {
     return {
       requestId: input.requestId,
       promptStarted: Promise.resolve(),
-      events: (async function* () {})(),
+      events: (async function* () {
+        for (const event of turnEvents) yield event;
+      })(),
       result: Promise.race([this.play(index), cancelled]),
       cancel: async () => {
         this.cancels += 1;
@@ -348,6 +357,51 @@ describe("AcpxStepExecutor", () => {
     const result = await executor.runAgentStep(makeRequest(), new AbortController().signal);
     expect(result).toEqual({ output: "late" });
     expect(runtime().texts).toHaveLength(2);
+  });
+
+  it("reports turn events to onActivity as live step activity and survives a throwing callback", async () => {
+    const events: AcpRuntimeEvent[] = [
+      { type: "text_delta", text: "Think ", stream: "thought" },
+      { type: "text_delta", text: "about 2+2." },
+      { type: "status", text: "thinking hard" },
+      { type: "status", text: "tokens used", tag: "usage_update", used: 12, size: 34 },
+      {
+        type: "tool_call",
+        text: "Read README.md",
+        toolCallId: "call-1",
+        title: "Read",
+        kind: "read",
+        rawInput: { path: "README.md" },
+      },
+      { type: "done", stopReason: "end_turn" },
+    ];
+    const { executor } = await setup(
+      [async (call) => void (await call(submit({ answer: 4 })))],
+      {},
+      { events },
+    );
+    const bodies: StepActivityBody[] = [];
+    const result = await executor.runAgentStep(
+      makeRequest({
+        onActivity: (body) => {
+          bodies.push(body);
+          if (bodies.length === 2) throw new Error("activity callback exploded");
+        },
+      }),
+      new AbortController().signal,
+    );
+
+    expect(result).toEqual({ output: { answer: 4 } });
+    expect(bodies).toEqual([
+      { kind: "thought", text: "Think " },
+      { kind: "text", text: "about 2+2." },
+      { kind: "status", text: "thinking hard" },
+      {
+        kind: "tool",
+        text: "Read README.md",
+        tool: { toolCallId: "call-1", title: "Read", kind: "read", input: { path: "README.md" } },
+      },
+    ]);
   });
 
   it("cancels, shuts down and rejects abort-like when the signal aborts", async () => {

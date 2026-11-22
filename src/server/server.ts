@@ -68,6 +68,7 @@ import {
   pruneState,
   pruneStateAutomatically,
 } from "../state/prune.js";
+import { parseStepActivityBodies, type StepActivity } from "../state/step-activity.js";
 import { recordViewerDeltas } from "../state/viewer.js";
 import { workflowMessageIdFor } from "../state/workflow-messages.js";
 import { humanDecisionChannelRequest } from "../workflows/decision-presentation.js";
@@ -129,6 +130,7 @@ import {
   type InteractiveSubmissionRecord,
   type WorkflowRunnerLaunchEnvelope,
 } from "./state.js";
+import { StepActivityHub, stepActivityFrames, type StepActivityListener } from "./step-activity.js";
 import { ServerViewStore, WORKFLOW_PAGE_KINDS, type WorkflowPageKind } from "./view.js";
 import { boundRunnerResponse, readRunnerContentChunk } from "./workflow-runner-content.js";
 import type {
@@ -149,6 +151,14 @@ const RESOURCE_MANAGER_CLAIM_LEASE_MS = 120_000;
 const RESOURCE_MANAGER_RENEW_MS = 30_000;
 const DEFAULT_MAX_RUNNERS = 4;
 const DEFAULT_RESOURCE_MANAGER_TIMEOUT_MS = 60_000;
+/**
+ * One step_activity frame keeps its activity array at most this large. The
+ * limit exists because the client protocol frame limit
+ * (`MAX_PROTOCOL_MESSAGE_BYTES`, 1 MiB) is a named external interface; the
+ * rest of the budget covers the event envelope. Nothing is dropped: a larger
+ * burst splits across frames instead.
+ */
+const ACTIVITY_FRAME_BUDGET_BYTES = 512 * 1024;
 
 export type WorkflowServerOptions = {
   /** Retained for callers; the server itself is global to the state database. */
@@ -187,13 +197,17 @@ type ActiveRun = {
 
 type ClientSubscription = {
   id: string;
-  kind: "runs" | "run" | "session";
+  kind: "runs" | "run" | "activity" | "session";
   target?: string;
   revision: number;
   limit?: number;
   /** First node row this session snapshot must start at. */
   nodeCursor?: number;
   digest?: string;
+  /** Set for activity subscriptions: stops the run's hub listener. */
+  unsubscribe?: () => void;
+  /** Set until the first event of a watch with `reset: true` has been sent. */
+  reset?: boolean;
 };
 
 type ClientConnection = {
@@ -263,6 +277,8 @@ export class WorkflowServer {
   private readonly views: ServerViewStore;
   private readonly registry: ServerProcessRegistry;
   private readonly activeRuns = new Map<string, ActiveRun>();
+  /** One per server: numbers and fans out live step activity, in memory only. */
+  private readonly stepActivity = new StepActivityHub();
   private readonly runnerDescendants = new Map<string, Set<number>>();
   private readonly activeResourceManagers = new Map<string, ActiveResourceManager>();
   private readonly activeChannels = new Map<string, ActiveChannel>();
@@ -743,6 +759,9 @@ export class WorkflowServer {
     socket.on("close", () => {
       this.sockets.delete(socket);
       this.connections.delete(socket);
+      for (const subscription of connection.subscriptions.values()) {
+        subscription.unsubscribe?.();
+      }
       this.detachSessionCoordinators(connection.id);
       this.views.clearConnection(connection.id);
       this.publishViews();
@@ -813,6 +832,25 @@ export class WorkflowServer {
           this.addSubscription(connection, request, "run", runId);
           return clientResponse(request.requestId, "accepted", { subscribed: true });
         }
+        case "view.run.activity.watch": {
+          const runId = requireRunId(request);
+          if (this.views.run(runId) === null) {
+            return clientResponse(
+              request.requestId,
+              "notFound",
+              undefined,
+              "Workflow run not found",
+            );
+          }
+          this.addActivitySubscription(connection, request, runId);
+          return clientResponse(request.requestId, "accepted", { subscribed: true });
+        }
+        case "view.run.activity.unwatch": {
+          const payload = requireRecord(request.payload, "view.run.activity.unwatch payload");
+          const subscriptionId = requireString(payload.subscriptionId, "subscriptionId");
+          this.removeSubscription(connection, subscriptionId);
+          return clientResponse(request.requestId, "accepted", { subscribed: false });
+        }
         case "view.session.watch": {
           const payload = requireRecord(request.payload, "view.session.watch payload");
           const sessionId = requireString(payload.sessionId, "sessionId");
@@ -863,7 +901,10 @@ export class WorkflowServer {
         }
         case "view.run.unwatch": {
           const payload = requireRecord(request.payload, "view.run.unwatch payload");
-          connection.subscriptions.delete(requireString(payload.subscriptionId, "subscriptionId"));
+          this.removeSubscription(
+            connection,
+            requireString(payload.subscriptionId, "subscriptionId"),
+          );
           return clientResponse(request.requestId, "accepted", { subscribed: false });
         }
         case "view.page": {
@@ -1063,6 +1104,68 @@ export class WorkflowServer {
       ...(nodeCursor === undefined ? {} : { nodeCursor }),
       revision: 0,
     });
+  }
+
+  /** Register one run-activity watch: replay from its resume point, then live. */
+  private addActivitySubscription(
+    connection: ClientConnection,
+    request: ClientRequest,
+    runId: string,
+  ): void {
+    const payload = requireRecord(request.payload, "view.run.activity.watch payload");
+    const subscriptionId = requireString(payload.subscriptionId, "subscriptionId");
+    const afterSeq = requireNonNegativeInteger(payload.afterSeq, "afterSeq");
+    // A repeated watch with the same subscription id replaces the previous one.
+    this.removeSubscription(connection, subscriptionId);
+    const point = this.stepActivity.resumePoint(runId, afterSeq);
+    const subscription: ClientSubscription = {
+      id: subscriptionId,
+      kind: "activity",
+      target: runId,
+      revision: 0,
+      ...(point.reset ? { reset: true } : {}),
+    };
+    connection.subscriptions.set(subscriptionId, subscription);
+    const listener: StepActivityListener = (activities) => {
+      this.deliverActivitySubscription(connection, subscription, activities);
+    };
+    subscription.unsubscribe = this.stepActivity.subscribe(runId, point.afterSeq, listener);
+  }
+
+  /** Drop one subscription, stopping a run-activity hub listener when there is one. */
+  private removeSubscription(connection: ClientConnection, subscriptionId: string): void {
+    const subscription = connection.subscriptions.get(subscriptionId);
+    connection.subscriptions.delete(subscriptionId);
+    subscription?.unsubscribe?.();
+  }
+
+  /** One hub delivery: the run's newest activity, split into frames under the client limit. */
+  private deliverActivitySubscription(
+    connection: ClientConnection,
+    subscription: ClientSubscription,
+    activities: StepActivity[],
+  ): void {
+    if (connection.socket.destroyed || activities.length === 0) return;
+    const reset = subscription.reset === true;
+    subscription.reset = false;
+    for (const [index, frame] of stepActivityFrames(
+      activities,
+      ACTIVITY_FRAME_BUDGET_BYTES,
+    ).entries()) {
+      const event: ClientEvent = {
+        schema: CLIENT_PROTOCOL_SCHEMA,
+        type: "event",
+        subscriptionId: subscription.id,
+        event: "step_activity",
+        ...(subscription.target === undefined ? {} : { runId: subscription.target }),
+        payload: {
+          activities: frame as unknown as JsonValue,
+          ...(reset && index === 0 ? { reset: true } : {}),
+        },
+      };
+      const written = this.writeClientFrame(connection.socket, event);
+      if (written.status === "sent") void written.drained?.catch(() => undefined);
+    }
   }
 
   private sessionCoordinatorView(
@@ -1494,6 +1597,8 @@ export class WorkflowServer {
     connection: ClientConnection,
     subscription: ClientSubscription,
   ): Promise<void> {
+    // Activity subscriptions stream from the hub, not from this poll.
+    if (subscription.kind === "activity") return;
     const payload =
       subscription.kind === "runs"
         ? toJsonValue(this.views.list(0, subscription.limit))
@@ -1649,6 +1754,7 @@ export class WorkflowServer {
           };
         }
         this.recovery.cancel(runId);
+        this.stepActivity.closeRun(runId);
         const active = this.activeRuns.get(runId);
         if (active !== undefined) {
           if (
@@ -1662,6 +1768,7 @@ export class WorkflowServer {
             return { outcome: "claimLost", error: "Run claim was lost before cancellation" };
           }
           active.control = "cancel";
+          this.stepActivity.closeRun(runId);
           afterCommit.push(() => this.tryEnsureTerminalWorkflowMessage(runId));
           afterCommit.push(() => void active.supervisor.stop("cancelled"));
           return { outcome: "accepted", receipt: { runId, status: "cancelled" } };
@@ -1672,11 +1779,15 @@ export class WorkflowServer {
             return { outcome: "claimLost", error: "Run claim was lost before cancellation" };
           }
           this.clearPendingStart(runId, pendingClaim);
+          this.stepActivity.closeRun(runId);
           afterCommit.push(() => this.tryEnsureTerminalWorkflowMessage(runId));
           return { outcome: "accepted", receipt: { runId, status: "cancelled" } };
         }
         const cancelled = this.queue.cancelWorkflowRun({ runId });
-        if (cancelled) afterCommit.push(() => this.tryEnsureTerminalWorkflowMessage(runId));
+        if (cancelled) {
+          this.stepActivity.closeRun(runId);
+          afterCommit.push(() => this.tryEnsureTerminalWorkflowMessage(runId));
+        }
         return cancelled
           ? { outcome: "accepted", receipt: { runId, status: "cancelled" } }
           : { outcome: "rejected", error: "Run has a live owner or is already terminal" };
@@ -1842,6 +1953,8 @@ export class WorkflowServer {
       case "view.run.get":
       case "view.run.watch":
       case "view.run.unwatch":
+      case "view.run.activity.watch":
+      case "view.run.activity.unwatch":
       case "view.page":
       case "view.content":
       case "view.session.watch":
@@ -4234,6 +4347,12 @@ export class WorkflowServer {
     ) {
       return runnerResponse(message, "claimLost", undefined, "Runner epoch is stale");
     }
+    // Live activity is a side channel: it is never recorded, never replayed, and
+    // never revision-checked, so it must leave this path before the durable
+    // read and the recording below.
+    if (message.operation === "activity.publish") {
+      return this.handleRunnerActivityMessage(message);
+    }
     const stored = this.serverState.readRunnerMessage(message);
     if (stored !== undefined) {
       return boundRunnerResponse(this.state, active.contentDigests, stored);
@@ -4439,6 +4558,20 @@ export class WorkflowServer {
         undefined,
         this.runStore.runRevision(message.runId),
       );
+    } catch (error) {
+      return runnerResponse(message, "rejected", undefined, errorMessage(error));
+    }
+  }
+
+  /** Side-channel runner activity: validate, number and fan out; keep it out of all durable state. */
+  private handleRunnerActivityMessage(message: WorkflowRunnerMessage): WorkflowRunnerResponse {
+    try {
+      const payload = requireRecord(message.payload, "runner activity payload");
+      const nodeId = requireString(payload.nodeId, "nodeId");
+      const attemptId = requireString(payload.attemptId, "attemptId");
+      const bodies = parseStepActivityBodies(payload.bodies);
+      this.stepActivity.publish({ runId: message.runId, nodeId, attemptId }, bodies);
+      return runnerResponse(message, "accepted", {});
     } catch (error) {
       return runnerResponse(message, "rejected", undefined, errorMessage(error));
     }
@@ -4789,6 +4922,10 @@ export class WorkflowServer {
         ["done", "failed", "cancelled"].includes(queueStatus) ? context.now : null,
         context.runId,
       );
+    if (["done", "failed", "cancelled"].includes(queueStatus)) {
+      // The run reached a final state: forget its live step activity.
+      this.stepActivity.closeRun(context.runId);
+    }
     context.database.connection
       .prepare(
         `UPDATE leases
@@ -5102,6 +5239,7 @@ export class WorkflowServer {
           errorMessage: active.workflowLoadFailure,
         })
       ) {
+        this.stepActivity.closeRun(active.record.runId);
         this.tryEnsureTerminalWorkflowMessage(active.record.runId, Date.now(), {
           status: "failed",
           error: active.workflowLoadFailure,

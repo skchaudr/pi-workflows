@@ -32,6 +32,8 @@ const OPERATIONS: &[&str] = &[
     "view.run.get",
     "view.run.watch",
     "view.run.unwatch",
+    "view.run.activity.watch",
+    "view.run.activity.unwatch",
     "view.page",
     "view.content",
     "view.session.watch",
@@ -57,6 +59,7 @@ const EVENTS: &[&str] = &[
     "runs",
     "run_snapshot",
     "run_page",
+    "step_activity",
     "session_snapshot",
     "unavailable",
 ];

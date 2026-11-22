@@ -47,6 +47,7 @@ export const WORKFLOW_RUNNER_STORE_OPERATIONS = [
   "content.read",
   "process.register",
   "process.unregister",
+  "activity.publish",
   "interaction.request",
   "interaction.accept",
   "interaction.reject",

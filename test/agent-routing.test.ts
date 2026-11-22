@@ -219,6 +219,19 @@ const request = (fields: Partial<AgentStepRequest> = {}, contract = {}): AgentSt
 });
 
 describe("AgentRoutingExecutor", () => {
+  it("passes the step's onActivity through untouched on both paths", async () => {
+    const runExecutor = new FakeExecutor("run", answerWith("run"));
+    const acpx = new Map<string, FakeExecutor>();
+    const onActivity = () => undefined;
+    const plain = request({ onActivity });
+    await routing(runExecutor, acpx).runAgentStep(plain, new AbortController().signal);
+    expect(runExecutor.requests[0]?.onActivity).toBe(onActivity);
+
+    const routed = request({ onActivity, agent: "claude" });
+    await routing(runExecutor, acpx).runAgentStep(routed, new AbortController().signal);
+    expect(acpx.get("claude:-")?.requests[0]?.onActivity).toBe(onActivity);
+  });
+
   it("sends a request without agent to the run's executor, the same request, nothing else", async () => {
     const runExecutor = new FakeExecutor("run", answerWith("run"));
     const acpx = new Map<string, FakeExecutor>();

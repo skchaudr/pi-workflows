@@ -1,3 +1,5 @@
+import type { StepActivityBody } from "../state/step-activity.js";
+
 export type MaybePromise<T> = T | Promise<T>;
 
 /**
@@ -893,6 +895,12 @@ export type AgentStepRequest = {
     update: WorkflowUpdateInput,
     idempotencyKey?: string,
   ) => Promise<WorkflowUpdateReceipt>;
+  /**
+   * Live activity of this step (streaming answer text, thinking, status lines,
+   * tool calls) as the executor observes it. Never persisted. Executors call it
+   * as chunks arrive; a throwing callback must never fail the step.
+   */
+  onActivity?: (body: StepActivityBody) => void;
 };
 
 export type AgentStepSubmission = {
