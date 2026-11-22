@@ -20,7 +20,8 @@ You need three things on the machine:
 - **The agents the workflow names.** A step with `agent: "claude"` needs Claude Code signed in. A
   step with `agent: "grok-build"` needs Grok signed in. A step without `agent` runs on Pi.
 
-The workflow server starts on demand. To control it by hand, run these from this checkout:
+Grok Build connects to the workflow server; it does not start one. Pi starts the server from the
+package its settings name. To check, stop or start it by hand, run these from this checkout:
 
 ```bash
 node dist/viewer/cli.js server status
@@ -34,7 +35,8 @@ node dist/viewer/cli.js server stop
 node dist/viewer/cli.js server start
 ```
 
-Restart it after you pull or rebuild pi-workflows. A running server keeps the code it loaded.
+Restart it after you pull or rebuild pi-workflows. A running server keeps the code it loaded, so a
+server started earlier from the published package keeps running that package until it is stopped.
 
 ## Write a workflow
 
