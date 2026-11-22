@@ -246,7 +246,7 @@ class AcpxStep {
       requestId: `${this.request.contract.attemptId}:${++this.turnCount}`,
     });
     this.turn = turn;
-    const finished = finishTurn(turn, this.request.onActivity);
+    const finished = finishTurn(turn, this.request.onActivity, () => this.reportingLive());
     finished.catch(() => undefined);
     const outcome = await Promise.race([finished, this.settled]);
     if (this.failure !== undefined) throw this.failure;
@@ -256,6 +256,17 @@ class AcpxStep {
     }
     this.throwIfTurnBroke(outcome as AcpRuntimeTurnResult);
     return undefined;
+  }
+
+  /**
+   * Activity is reported only while the step is still running. Once a submission is accepted, the
+   * accept throws, or the step aborts, this executor cancels the acpx turn itself, and the runtime
+   * then marks any tool call that was still open as rejected ("the user doesn't want to proceed").
+   * Those are teardown artifacts of a call that did not fail, so they must not reach watchers. A
+   * tool call that really fails while the step is live is still reported.
+   */
+  private reportingLive(): boolean {
+    return this.accepted === undefined && this.failure === undefined && !this.signal.aborted;
   }
 
   private throwIfTurnBroke(result: AcpRuntimeTurnResult): void {
@@ -404,14 +415,19 @@ function reminderPrompt(request: AgentStepRequest): string {
   ].join("\n");
 }
 
-/** Drain a turn's events, mapping the visible ones to `onActivity`, then return its canonical result. */
+/**
+ * Drain a turn's events, mapping the visible ones to `onActivity` while the step is live, then
+ * return its canonical result. Events after the step resolved belong to the turn cancellation,
+ * not the agent: the runtime marks calls the executor interrupted as rejected tool calls.
+ */
 async function finishTurn(
   turn: AcpRuntimeTurn,
   onActivity: ((body: StepActivityBody) => void) | undefined,
+  isStepLive: () => boolean,
 ): Promise<AcpRuntimeTurnResult> {
   try {
     for await (const event of turn.events) {
-      reportTurnEvent(onActivity, event);
+      if (isStepLive()) reportTurnEvent(onActivity, event);
     }
   } catch {
     // The turn result below is the canonical outcome.

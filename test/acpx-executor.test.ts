@@ -87,6 +87,8 @@ class FakeRuntime implements AcpxStepRuntime {
   readonly sessions: AcpRuntimeEnsureInput[] = [];
   shutdowns = 0;
   cancels = 0;
+  /** Set once the fake delivered every `eventsAfterCancel` artifact, as acpx does after a cancel. */
+  afterCancelEventsDrained = false;
   client: McpClient | undefined;
 
   constructor(
@@ -96,6 +98,8 @@ class FakeRuntime implements AcpxStepRuntime {
       failModel?: string;
       failTurn?: string;
       events?: AcpRuntimeEvent[];
+      /** Emulated acpx cancel artifacts, yielded after `cancel` interrupts the turn. */
+      eventsAfterCancel?: AcpRuntimeEvent[];
     } = {},
   ) {}
 
@@ -112,23 +116,38 @@ class FakeRuntime implements AcpxStepRuntime {
   startTurn(input: AcpRuntimeTurnInput): AcpRuntimeTurn {
     const index = this.texts.push(input.text) - 1;
     const turnEvents = this.options.events ?? [];
-    let cancel: () => void = () => undefined;
-    const cancelled = new Promise<AcpRuntimeTurnResult>((resolve) => {
-      cancel = () => resolve({ status: "cancelled", stopReason: "cancelled" });
+    const cancelEvents = this.options.eventsAfterCancel ?? [];
+    let resolveCancel: () => void = () => undefined;
+    const cancelledTurn = new Promise<void>((resolve) => {
+      resolveCancel = resolve;
     });
+    const cancelled = cancelledTurn.then(
+      (): AcpRuntimeTurnResult => ({ status: "cancelled", stopReason: "cancelled" }),
+    );
     return {
       requestId: input.requestId,
       promptStarted: Promise.resolve(),
-      events: (async function* () {
-        for (const event of turnEvents) yield event;
-      })(),
+      events: this.turnEventStream(turnEvents, cancelEvents, cancelledTurn),
       result: Promise.race([this.play(index), cancelled]),
       cancel: async () => {
         this.cancels += 1;
-        cancel();
+        resolveCancel();
       },
       closeStream: async () => undefined,
     };
+  }
+
+  private async *turnEventStream(
+    turnEvents: AcpRuntimeEvent[],
+    cancelEvents: AcpRuntimeEvent[],
+    cancelledTurn: Promise<void>,
+  ): AsyncGenerator<AcpRuntimeEvent> {
+    for (const event of turnEvents) yield event;
+    if (cancelEvents.length > 0) {
+      await cancelledTurn;
+      for (const event of cancelEvents) yield event;
+      this.afterCancelEventsDrained = true;
+    }
   }
 
   private async play(index: number): Promise<AcpRuntimeTurnResult> {
@@ -400,6 +419,83 @@ describe("AcpxStepExecutor", () => {
         kind: "tool",
         text: "Read README.md",
         tool: { toolCallId: "call-1", title: "Read", kind: "read", input: { path: "README.md" } },
+      },
+    ]);
+  });
+
+  it("does not report the cancel artifact of the workflow tool call after the step is accepted", async () => {
+    const events: AcpRuntimeEvent[] = [
+      { type: "text_delta", text: "Answering now." },
+      {
+        type: "tool_call",
+        text: "The Read failed on purpose.",
+        toolCallId: "call-1",
+        title: "Read",
+        kind: "read",
+        status: "failed",
+        rawInput: { path: "missing.md" },
+        rawOutput: "no such file",
+      },
+      {
+        type: "tool_call",
+        text: "submit",
+        toolCallId: "call-2",
+        title: "workflow",
+        kind: "other",
+        rawInput: { action: "submit" },
+      },
+    ];
+    // What acpx emits once the executor interrupts the accepted turn: the still-open
+    // workflow call is marked rejected even though its submission was accepted.
+    const eventsAfterCancel: AcpRuntimeEvent[] = [
+      {
+        type: "tool_call",
+        text: "The user doesn't want to proceed with this tool use.",
+        toolCallId: "call-2",
+        title: "workflow",
+        kind: "other",
+        status: "failed",
+        rawOutput:
+          "The user doesn't want to proceed with this tool use. The tool use was rejected.",
+      },
+    ];
+    const { executor, runtime } = await setup(
+      [async (call) => void (await call(submit({ answer: 4 })))],
+      {},
+      { events, eventsAfterCancel },
+    );
+    const bodies: StepActivityBody[] = [];
+    const result = await executor.runAgentStep(
+      makeRequest({ onActivity: (body) => void bodies.push(body) }),
+      new AbortController().signal,
+    );
+
+    expect(result).toEqual({ output: { answer: 4 } });
+    expect(runtime().cancels).toBe(1);
+    await vi.waitFor(() => expect(runtime().afterCancelEventsDrained).toBe(true));
+    expect(bodies).toEqual([
+      { kind: "text", text: "Answering now." },
+      {
+        kind: "tool",
+        text: "The Read failed on purpose.",
+        tool: {
+          toolCallId: "call-1",
+          title: "Read",
+          kind: "read",
+          status: "failed",
+          input: { path: "missing.md" },
+          output: "no such file",
+        },
+      },
+      {
+        kind: "tool",
+        text: "submit",
+        tool: {
+          toolCallId: "call-2",
+          title: "workflow",
+          kind: "other",
+          input: { action: "submit" },
+        },
       },
     ]);
   });
