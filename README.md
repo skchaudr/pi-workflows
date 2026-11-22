@@ -267,6 +267,9 @@ Remap or remove those keys with the optional
 [shortcuts file](docs/WORKFLOWS.md#widget-scroll-shortcuts).
 Use `piw` when you need the full boxed graph and its edges.
 
+To start and answer a workflow from inside Grok Build, with steps on Grok, Claude and Pi, see
+[Run a workflow from Grok Build](docs/GROK_BUILD.md).
+
 ## Herdr integration
 
 pi-workflows also ships as a [Herdr](https://herdr.dev) plugin. After installing
