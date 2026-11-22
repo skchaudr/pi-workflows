@@ -348,6 +348,7 @@ export class ServerViewStore {
       state: this.projectState(runId, loaded.state, stepPage.items, updatePage.items),
       workflow: this.projectWorkflow(runId, loaded.snapshot),
       queue: projectQueue(queue),
+      interaction: this.currentRunInteraction(runId),
       updates: updatePage.items,
       graphSteps,
       graphStepStart: 0,
@@ -665,6 +666,18 @@ export class ServerViewStore {
   /** Whether Pi still owes delivery confirmation or a model turn for this message. */
   private needsPiWork(message: WorkflowMessageSummary): boolean {
     return this.openWorkflowMessage([message]) !== undefined;
+  }
+
+  /** The watched run's own pending human decision, with what a client needs to answer it. */
+  private currentRunInteraction(runId: string): ClientInteractiveRequest | null {
+    const pending = this.serverState.listPendingDecisionInteractionsForRun(runId);
+    const first = pending[0];
+    if (first === undefined) return null;
+    return this.projectRecordField(
+      first.runId,
+      first,
+      "contract",
+    ) as unknown as ClientInteractiveRequest;
   }
 
   private currentInteraction(sessionId: string): ClientInteractiveRequest | null {
@@ -1490,7 +1503,25 @@ export class ServerViewStore {
       this.pendingRequestKind(runId),
       this.requestDeliveryConfirmed(runId),
       this.hasAmbiguousEffect(runId),
+      this.pendingRunInteractionRevision(runId),
     ].join(":");
+  }
+
+  /**
+   * Names the run's pending decision gate exactly, so a gate appearing, moving
+   * revision, or being answered invalidates the cached run view.
+   */
+  private pendingRunInteractionRevision(runId: string): string {
+    const row = this.state.connection
+      .prepare(
+        `SELECT count(*) AS count, COALESCE(sum(revision), 0) AS revisionSum,
+                COALESCE(max(updated_at), 0) AS updatedAt
+         FROM interactive_requests
+         WHERE run_id = ? AND status = 'pending' AND kind = 'decision'`,
+      )
+      .get(runId);
+    if (!isSessionRevisionRow(row)) throw new Error("Run view revision is invalid");
+    return `${row.count}:${row.revisionSum}:${row.updatedAt}`;
   }
 
   private pendingSessionRevision(sessionId: string): string {

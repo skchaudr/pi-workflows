@@ -102,6 +102,13 @@ export type WorkflowRunView = {
   workflowMessages: JsonValue[];
   workflowMessageStart: number;
   workflowMessageTotal: number;
+  /**
+   * The watched run's own pending human decision, with what a client needs to
+   * answer it (requestId, revision, target session). Null when the run holds no
+   * pending decision, so a client watching this run sees this run's gate even
+   * when another run on the same session is also parked.
+   */
+  interaction: ClientInteractiveRequest | null;
   live: boolean;
   possiblyInterrupted: boolean;
 };

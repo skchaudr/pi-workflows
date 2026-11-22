@@ -829,6 +829,19 @@ export class ServerStateStore {
       );
   }
 
+  listPendingDecisionInteractionsForRun(runId: string): InteractiveRequestRecord[] {
+    return this.state.connection
+      .prepare(
+        `SELECT request_id AS requestId FROM interactive_requests
+         WHERE run_id = ? AND kind = 'decision' AND status = 'pending'
+         ORDER BY created_at, request_id`,
+      )
+      .all(runId)
+      .flatMap((row) =>
+        isRequestIdRow(row) ? [this.requireInteractiveRequest(row.requestId)] : [],
+      );
+  }
+
   listPendingDecisionInteractions(): InteractiveRequestRecord[] {
     return this.state.connection
       .prepare(

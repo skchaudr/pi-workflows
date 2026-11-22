@@ -64,6 +64,205 @@ export default defineWorkflow({
 
 type PendingInteraction = { requestId: string; kind: string; runId: string; revision: number };
 
+async function writeGateFirstWorkflow(cwd: string): Promise<string> {
+  const workflowPath = path.join(cwd, "gate-first.workflow.ts");
+  await fs.writeFile(
+    workflowPath,
+    `import {
+  choice,
+  compute,
+  defineHumanChoices,
+  defineWorkflow,
+  humanDecision,
+  humanDecisionEdge,
+} from ${JSON.stringify(path.resolve("src/workflows/index.ts"))};
+const choices = defineHumanChoices({
+  continue: choice({ label: "Continue" }),
+  stop: choice({ label: "Stop" }),
+});
+export default defineWorkflow({
+  name: "non-pi-gate-first",
+  startAt: "gate",
+  nodes: {
+    gate: humanDecision({
+      audience: "operator",
+      choices,
+      request: () => ({
+        title: "Continue?",
+        subject: { task: "non-pi" },
+        presentation: {
+          schema: "pi-workflows.decision-presentation.v1",
+          summary: "Choose whether to continue.",
+          blocks: [],
+        },
+      }),
+    }),
+    done: compute({ run: () => ({ continued: true }) }),
+    stopped: compute({ run: () => ({ stopped: true }) }),
+  },
+  edges: [
+    humanDecisionEdge({
+      from: "gate",
+      choices,
+      cases: { continue: "done", stop: "stopped" },
+    }),
+  ],
+});\n`,
+  );
+  return workflowPath;
+}
+
+type RunGate = {
+  requestId: string;
+  runId: string;
+  kind: string;
+  revision: number;
+  targetSessionId: string;
+};
+
+type GateRunSnapshot = {
+  runId: string;
+  queue: { status: string };
+  interaction: {
+    requestId: string;
+    runId: string;
+    kind: string;
+    revision: number;
+    targetSessionId: string;
+  } | null;
+};
+
+describe("run-view gates on one session", () => {
+  it("each of two runs parked at gates on one session carries its own gate in its run view, and the second is answerable from it", async () => {
+    const cwd = await makeTempDir("run-view-gates-project");
+    const databasePath = path.join(await makeTempDir("run-view-gates-state"), "state.sqlite");
+    const workflowPath = await writeGateFirstWorkflow(cwd);
+    const server = new WorkflowServer({ databasePath, claimPollMs: 10 });
+    const client = new WorkflowClient({ databasePath, clientId: "run-view-gates-client" });
+    await server.start();
+    const session = "run-view-gates-session";
+    try {
+      const resolved = await client.resolveWorkflow({ cwd, workflowRef: workflowPath });
+      for (const runId of ["gates-run-a", "gates-run-b"]) {
+        const started = await client.request({
+          operation: "run.start",
+          runId,
+          payload: {
+            projectPath: cwd,
+            workflowName: resolved.workflowName,
+            workflowSourceRef: resolved.workflowSourceRef,
+            workflowSource: resolved.workflowSource,
+            definitionDigest: resolved.definitionDigest,
+            definitionSnapshot: resolved.definitionSnapshot,
+            input: {},
+            launchOptions: {},
+            originSessionId: session,
+            executionMode: "headless",
+          },
+        });
+        expect(started.outcome).toBe("accepted");
+      }
+
+      let snapshotA: GateRunSnapshot | null = null;
+      let snapshotB: GateRunSnapshot | null = null;
+      const unwatchA = await client.watchRun(
+        "gates-run-a",
+        (event) => {
+          if (event.event === "run_snapshot") snapshotA = event.payload as GateRunSnapshot;
+        },
+        { subscriptionId: "gates-watch-a" },
+      );
+      const unwatchB = await client.watchRun(
+        "gates-run-b",
+        (event) => {
+          if (event.event === "run_snapshot") snapshotB = event.payload as GateRunSnapshot;
+        },
+        { subscriptionId: "gates-watch-b" },
+      );
+
+      let epoch: string | null = null;
+      const unwatchSession = await client.watchSession(
+        session,
+        (event) => {
+          if (event.event !== "session_snapshot") return;
+          epoch = (event.payload as { coordinatorEpoch?: string | null }).coordinatorEpoch ?? null;
+        },
+        { subscriptionId: "gates-session-watch", coordinator: true },
+      );
+      try {
+        await waitUntil(() => epoch !== null, 30_000);
+        const authority = {
+          targetSessionId: session,
+          coordinatorEpoch: epoch as unknown as string,
+        };
+        const reported = await reportBranch(client, authority, {
+          workflowMessageId: null,
+          piSessionEntryId: null,
+          isIdle: true,
+          hasPendingMessages: false,
+        });
+        expect(reported.outcome).toBe("accepted");
+
+        // Each run view carries its own gate, even though the session view can
+        // name only one pending interaction.
+        // A queued run's snapshot carries no gate yet; wait for a real one.
+        const hasGate = (snapshot: GateRunSnapshot | null): boolean => {
+          if (snapshot === null) return false;
+          const gate = snapshot.interaction;
+          return gate !== null && typeof gate === "object";
+        };
+        await waitUntil(() => hasGate(snapshotA) && hasGate(snapshotB), 30_000);
+        const gateA = (snapshotA as unknown as GateRunSnapshot).interaction as unknown as RunGate;
+        const gateB = (snapshotB as unknown as GateRunSnapshot).interaction as unknown as RunGate;
+        expect(gateA.runId).toBe("gates-run-a");
+        expect(gateB.runId).toBe("gates-run-b");
+        expect(gateA.kind).toBe("decision");
+        expect(gateB.kind).toBe("decision");
+        expect(gateA.requestId).not.toBe(gateB.requestId);
+        expect(gateB.targetSessionId).toBe(session);
+
+        // The second run's gate is answerable using only values from its run view.
+        const answered = await client.request({
+          operation: "decision.answer",
+          idempotencyKey: "gates-answer-b",
+          runId: "gates-run-b",
+          expectedRevision: gateB.revision,
+          payload: {
+            targetSessionId: gateB.targetSessionId,
+            coordinatorEpoch: authority.coordinatorEpoch,
+            requestId: gateB.requestId,
+            submissionId: "gates-answer-b",
+            response: { choice: "continue" },
+          },
+        });
+        expect(answered.outcome).toBe("accepted");
+
+        // The answered run finishes and its gate leaves its view; the first run
+        // stays parked with its own gate.
+        await waitUntil(
+          () =>
+            snapshotB !== null &&
+            snapshotB.queue.status === "done" &&
+            snapshotB.interaction === null,
+          30_000,
+        );
+        const parked = snapshotA as unknown as GateRunSnapshot;
+        expect(parked.queue.status).toBe("parked");
+        expect((parked.interaction as unknown as { requestId: string }).requestId).toBe(
+          gateA.requestId,
+        );
+      } finally {
+        await unwatchA();
+        await unwatchB();
+        await unwatchSession();
+      }
+    } finally {
+      await client.close();
+      await server.stop();
+    }
+  });
+});
+
 describe("non-Pi workflow coordinator", () => {
   it("a non-Pi client can coordinate an interactive run through a gate in one run", async () => {
     const cwd = await makeTempDir("non-pi-project");
