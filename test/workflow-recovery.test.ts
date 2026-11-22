@@ -150,6 +150,24 @@ it("rejects a second launch from a consumed handoff even after the first run fin
   }
 });
 
+it("answers run.cancel for a run id that does not exist with a clear not-found result", async () => {
+  const f = await fixture();
+  const server = new WorkflowServer({ databasePath: f.databasePath, claimPollMs: 60_000 });
+  const client = new WorkflowClient({ databasePath: f.databasePath });
+  try {
+    await server.start();
+    const response = await client.request({ operation: "run.cancel", runId: "no-such-run" });
+    expect(response).toMatchObject({
+      outcome: "notFound",
+      error: "Workflow run not found",
+    });
+  } finally {
+    await client.close();
+    await server.stop();
+    f.queue.close();
+  }
+});
+
 it("prevents concurrent recovery siblings and cancels the sole queued child", async () => {
   const f = await fixture();
   const server = new WorkflowServer({ databasePath: f.databasePath, claimPollMs: 60_000 });

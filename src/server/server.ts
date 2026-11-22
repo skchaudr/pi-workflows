@@ -1736,6 +1736,9 @@ export class WorkflowServer {
       }
       case "run.cancel": {
         const runId = requireRunId(request);
+        if (this.queue.getWorkflowRun(runId) === undefined) {
+          return clientResponse(request.requestId, "notFound", undefined, "Workflow run not found");
+        }
         if (this.recovery.root(runId) === runId) {
           const children = this.state.connection
             .prepare(

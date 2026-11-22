@@ -286,6 +286,17 @@ export class ServerStateStore {
         response.receipt === undefined ? null : this.state.putJson(response.receipt, now);
       const errorHash =
         response.error === undefined ? null : this.state.putText(response.error, now);
+      // The client names the run a command targets. A command ledger row cannot
+      // reference a run id that never existed, and a run deleted later is already
+      // covered by the column's ON DELETE SET NULL, so an unknown id records as
+      // null and the operation's own response (notFound and the like) survives.
+      const requestedRunId = request.runId ?? null;
+      const recordedRunId =
+        requestedRunId === null ||
+        this.state.connection.prepare("SELECT 1 FROM runs WHERE run_id = ?").get(requestedRunId) !==
+          undefined
+          ? requestedRunId
+          : null;
       this.state.connection
         .prepare(
           `INSERT INTO server_commands(
@@ -300,7 +311,7 @@ export class ServerStateStore {
           request.operation,
           request.idempotencyKey,
           clientRequestFingerprint(request),
-          request.runId ?? null,
+          recordedRunId,
           response.revision ?? null,
           response.outcome,
           receiptHash,
