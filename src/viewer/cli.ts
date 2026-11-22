@@ -9,6 +9,7 @@ import { syncHerdrPlugin } from "../herdr/setup.js";
 import { serverLockPath, stopRecordedServer } from "../server/lock.js";
 import type { JsonValue } from "../state/json.js";
 import { verifyInactiveBackup } from "./backup.js";
+import { runStartCommand, type StartCommandClient, type StartCommandIo } from "./start-command.js";
 import { renderClientView, runViewer } from "./tui.js";
 
 const CLI_CLIENT_ID = "pi-workflows-cli";
@@ -16,6 +17,8 @@ const CLI_CLIENT_ID = "pi-workflows-cli";
 const USAGE = `pi-workflows — workflow runs and managed resources
 
 Usage:
+  pi-workflows start <workflow file or name> [--input <json> | --input-file <path>] [--cwd <dir>]
+                      [--session <id>] [--json]
   pi-workflows view [runId] [--once]
   pi-workflows runs
   pi-workflows resource-managers
@@ -184,6 +187,11 @@ export function parseCliArgs(argv: string[]): CliArgs {
 }
 
 export async function main(argv = process.argv.slice(2)): Promise<number> {
+  // The start command owns its own argument grammar and exit codes, so it is
+  // dispatched before the shared viewer parser.
+  if (argv[0] === "start") {
+    return await runStartCommand(argv.slice(1), cliIo(), { connect: connectForStart });
+  }
   let args: CliArgs;
   try {
     args = parseCliArgs(argv);
@@ -277,6 +285,25 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     process.stderr.write(`${errorMessage(error)}\n`);
     return 1;
   }
+}
+
+function cliIo(): StartCommandIo {
+  return {
+    stdout: (text) => void process.stdout.write(text),
+    stderr: (text) => void process.stderr.write(text),
+  };
+}
+
+/** The start command's client: the global server is ensured running, as for the other commands. */
+async function connectForStart(_options: { cwd: string }): Promise<StartCommandClient> {
+  const client = new WorkflowClient({ clientId: CLI_CLIENT_ID });
+  try {
+    await client.ensureRunning();
+  } catch (error) {
+    await client.close();
+    throw error;
+  }
+  return client;
 }
 
 async function runStateCommand(client: WorkflowClient, args: CliArgs): Promise<void> {
