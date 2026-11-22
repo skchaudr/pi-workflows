@@ -201,7 +201,12 @@ describe("Pi package resources", () => {
       (match) => match[1],
     );
 
-    expect(links).toEqual(["references/slice-template.md", "references/piw-lessons.md"]);
+    expect(links).toEqual([
+      "references/runs.md",
+      "references/slice-template.md",
+      "references/review-brief.md",
+      "references/piw-lessons.md",
+    ]);
     for (const link of links) {
       if (link === undefined) throw new Error("Missing parallel-slices reference path");
       const reference = await fs.readFile(path.resolve(path.dirname(skillPath), link), "utf8");

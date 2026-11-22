@@ -2,7 +2,7 @@
 
 The operator repeated an earlier text-only TypeScript generation method for the Rust piw viewer. Independent requests produced complete files from focused context and fixed public interfaces. A coordinating agent compiled, corrected, and wired the results. The method does not depend on Claude or a particular generation model.
 
-The Rust run used `google/gemini-4-argon` through OpenRouter, an intentional operator choice. A previous Flash run's reported low cost was not evidence that Argon was the wrong model, that the models had equivalent quality, or that this run would cost the same.
+The Rust run used `google/gemini-4-argon` through OpenRouter, an intentional operator choice. The model is the operator's choice; a cost comparison informs that choice and does not override it.
 
 Source-checkout evidence (not dependencies required to install this skill):
 

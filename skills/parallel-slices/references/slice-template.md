@@ -40,10 +40,11 @@ Attach complete relevant source excerpts after or before this assignment with th
 
 - Can the worker implement every public function from this information alone?
 - Do all attached files exist and all required declarations fit in the actual request?
+- Is the input within twice the baseline's largest slice in the run ledger, using excerpts rather than whole large files?
 - Is the target unique, confined to the intended repository, and staged outside production source?
 - Are public types imported rather than copied into competing modules?
 - Are test fixtures constructible with the provided fields and derives?
 - Have all consumers received the same shared contract and key/protocol changes?
-- Does the request use the chosen provider/model, without tools or autonomous execution?
+- Does the request use the chosen provider/model, through `scripts/slices.py`, without tools or autonomous execution?
 
 Do not make low-risk generation wait on hypothetical integration issues. Fix demonstrated prompt contradictions before dispatch; handle ordinary adapter code and mechanical repairs during integration.
