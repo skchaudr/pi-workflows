@@ -2,19 +2,23 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>piw workbench · beta8-merge</title>
+    <title>piw workbench</title>
     <style>
       :root {
-        --bg: #0f1115;
-        --panel: #161a21;
-        --line: #2a303b;
-        --text: #d7dbe3;
-        --dim: #8a93a3;
-        --ok: #5fbf7f;
-        --bad: #e0656a;
-        --warn: #e3b55b;
-        --info: #6aa8e8;
-        --accent: #b78cf2;
+        --bg: #1e1e2e;
+        --node: #313244;
+        --head: #45475a;
+        --text: #cdd6f4;
+        --dim: #7f849c;
+        --accent: #89b4fa;
+        --ok: #a6e3a1;
+        --bad: #f38ba8;
+        --warn: #f9e2af;
+        --mauve: #cba6f7;
+        --agent: #a6e3a1;
+        --compute: #89b4fa;
+        --action: #f9e2af;
+        --check: #cba6f7;
       }
       * {
         box-sizing: border-box;
@@ -24,1007 +28,609 @@
         background: var(--bg);
         color: var(--text);
         font:
-          13px/1.45 ui-monospace,
-          SFMono-Regular,
+          13px/1.35 ui-monospace,
           Menlo,
           monospace;
       }
-      header {
+      .bar {
         display: flex;
-        align-items: center;
-        gap: 12px;
-        padding: 8px 12px;
-        border-bottom: 1px solid var(--line);
+        gap: 16px;
+        padding: 6px 12px;
+        background: #181825;
       }
-      header .title {
-        font-weight: 600;
+      .bar .mode {
+        color: var(--accent);
       }
-      header .dim {
+      .bar .dim,
+      .dim {
         color: var(--dim);
       }
-      .tabs {
-        margin-left: auto;
-        display: flex;
-        gap: 4px;
+      #canvas {
+        position: relative;
+        margin: 16px 12px;
       }
-      .tab {
-        padding: 3px 10px;
-        border: 1px solid var(--line);
-        border-radius: 4px;
-        cursor: pointer;
-        color: var(--dim);
-        background: none;
-        font: inherit;
+      svg {
+        position: absolute;
+        inset: 0;
+        overflow: visible;
+        pointer-events: none;
       }
-      .tab.on {
-        color: var(--text);
-        border-color: var(--accent);
-      }
-      .mode-note {
-        padding: 4px 12px;
-        color: var(--dim);
-        border-bottom: 1px solid var(--line);
-      }
-      .mode-note b {
-        color: var(--text);
-      }
-      main {
-        display: grid;
-        grid-template-columns: 1.05fr 1fr 0.95fr;
-        height: calc(100vh - 128px);
-      }
-      section {
-        border-right: 1px solid var(--line);
-        overflow: auto;
-        padding: 10px 12px;
-      }
-      section:last-child {
-        border-right: none;
-      }
-      h2 {
-        font-size: 11px;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
-        color: var(--dim);
-        margin: 0 0 8px;
-        font-weight: 600;
-      }
-      .step {
-        display: grid;
-        grid-template-columns: 18px 16px 1fr auto;
-        gap: 6px;
-        align-items: center;
-        padding: 3px 4px;
-        border-radius: 3px;
-        cursor: pointer;
-      }
-      .step:hover,
-      .step.sel {
-        background: #1e2430;
-      }
-      .step.untaken {
-        opacity: 0.45;
-      }
-      .ok {
-        color: var(--ok);
-      }
-      .bad {
-        color: var(--bad);
-      }
-      .warn {
-        color: var(--warn);
-      }
-      .info {
-        color: var(--info);
-      }
-      .dimc {
-        color: var(--dim);
-      }
-      .detail {
-        margin-top: 10px;
-        border-top: 1px solid var(--line);
-        padding-top: 8px;
-      }
-      pre {
-        background: #0b0d11;
-        border: 1px solid var(--line);
-        padding: 8px;
-        margin: 6px 0;
-        white-space: pre-wrap;
-        word-break: break-word;
-        max-height: 260px;
-        overflow: auto;
-      }
-      .kv {
-        display: grid;
-        grid-template-columns: 130px 1fr;
-        gap: 2px 8px;
-      }
-      .kv div:nth-child(odd) {
-        color: var(--dim);
-      }
-      button.act {
-        font: inherit;
-        padding: 4px 10px;
-        border-radius: 4px;
-        border: 1px solid var(--accent);
-        background: #241c33;
-        color: var(--text);
-        cursor: pointer;
-      }
-      button.act:disabled {
-        opacity: 0.4;
-        cursor: default;
-      }
-      .p {
-        display: inline-block;
-        font-size: 10px;
-        padding: 0 5px;
-        border-radius: 3px;
-        border: 1px solid var(--warn);
-        color: var(--warn);
-        margin-left: 6px;
-        vertical-align: 1px;
-      }
-      .lib {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 6px;
-        margin-bottom: 10px;
-      }
-      .chip {
-        border: 1px solid var(--line);
-        border-radius: 12px;
-        padding: 1px 9px;
-        color: var(--dim);
-      }
-      .chip.used {
-        color: var(--text);
-        border-color: var(--info);
-      }
-      svg text {
-        font:
-          12px ui-monospace,
-          Menlo,
-          monospace;
-        fill: var(--text);
-      }
-      svg .node rect {
-        fill: #1b202a;
-        stroke: var(--line);
-        cursor: pointer;
-      }
-      svg .node.sel rect {
-        stroke: var(--accent);
-        stroke-width: 2;
-      }
-      svg .node.missing rect {
-        stroke: var(--bad);
-      }
-      svg .edge {
-        stroke: #556;
+      .edge {
+        stroke: #6c7086;
         fill: none;
-        marker-end: url(#arr);
+        marker-end: url(#a);
       }
-      svg .elabel {
+      .el {
         fill: var(--dim);
-        font-size: 10px;
+        font:
+          11px ui-monospace,
+          Menlo,
+          monospace;
       }
-      .field {
-        margin: 8px 0;
+      .card {
+        position: absolute;
+        width: 196px;
+        border: 1px solid #585b70;
+        background: var(--node);
+        cursor: pointer;
       }
-      .field label {
-        display: block;
-        color: var(--dim);
-        margin-bottom: 2px;
+      .card .h {
+        background: var(--head);
+        text-align: center;
+        padding: 2px 4px;
+        border-bottom: 1px solid #585b70;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
       }
-      .field label .req {
-        color: var(--bad);
+      .card .r {
+        padding: 1px 8px;
+        white-space: nowrap;
       }
-      .field input,
-      .field select,
-      .field textarea {
-        width: 100%;
-        font: inherit;
-        background: #0b0d11;
-        color: var(--text);
-        border: 1px solid var(--line);
-        border-radius: 3px;
-        padding: 4px 6px;
+      .card.ok {
+        border-color: var(--ok);
       }
-      .field input.missing {
+      .card.bad {
         border-color: var(--bad);
       }
-      .hint {
+      .card.wait {
+        border-color: var(--warn);
+      }
+      .card.off {
+        opacity: 0.35;
+      }
+      .card.missing {
+        border-color: var(--bad);
+        border-style: dashed;
+      }
+      .card.sel {
+        outline: 2px solid var(--mauve);
+        outline-offset: 1px;
+      }
+      .card.picked .h {
+        background: #5b4a7a;
+      }
+      .end {
+        position: absolute;
         color: var(--dim);
-        font-size: 11px;
-        margin-top: 2px;
       }
-      footer {
-        border-top: 1px solid var(--line);
-        padding: 6px 12px;
-        display: flex;
-        gap: 14px;
-        align-items: center;
-        flex-wrap: wrap;
-        min-height: 40px;
+      .t-agent {
+        color: var(--agent);
       }
-      footer .label {
-        color: var(--dim);
+      .t-compute {
+        color: var(--compute);
       }
-      .modal {
-        position: fixed;
-        inset: 40px;
-        background: var(--panel);
-        border: 1px solid var(--accent);
-        border-radius: 6px;
-        display: none;
-        flex-direction: column;
-        z-index: 5;
+      .t-action {
+        color: var(--action);
       }
-      .modal.on {
-        display: flex;
+      .t-check {
+        color: var(--check);
       }
-      .modal .bar {
-        display: flex;
-        gap: 8px;
-        align-items: center;
-        padding: 8px 12px;
-        border-bottom: 1px solid var(--line);
+      .ok-c {
+        color: var(--ok);
       }
-      .modal pre {
-        flex: 1;
-        margin: 10px;
-        max-height: none;
+      .bad-c {
+        color: var(--bad);
       }
-      .log {
-        font-size: 12px;
-      }
-      .log div {
-        border-bottom: 1px dashed var(--line);
-        padding: 3px 0;
-      }
-      .gatecard {
-        border: 1px solid var(--warn);
-        border-radius: 5px;
-        padding: 8px;
-        margin: 8px 0;
-      }
-      .meter {
-        height: 6px;
-        background: #222833;
-        border-radius: 3px;
-        overflow: hidden;
-        margin: 4px 0 8px;
-      }
-      .meter > div {
-        height: 100%;
-        background: var(--info);
-      }
-      .banner {
+      .warn-c {
         color: var(--warn);
-        border: 1px dashed var(--warn);
-        padding: 4px 8px;
-        border-radius: 4px;
-        margin-bottom: 8px;
+      }
+      .keys {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        padding: 5px 12px;
+        background: #181825;
+      }
+      .keys b {
+        color: var(--accent);
+        font-weight: normal;
+      }
+      .pop {
+        position: fixed;
+        top: 60px;
+        right: 20px;
+        width: 300px;
+        background: #181825;
+        border: 1px solid var(--mauve);
+        padding: 10px;
+        display: none;
+      }
+      .pop.on {
+        display: block;
+      }
+      .pop input {
+        width: 70px;
+        font: inherit;
+        background: var(--node);
+        color: var(--text);
+        border: 1px solid #585b70;
+        padding: 2px 4px;
+      }
+      .pop .row {
+        margin: 6px 0;
+      }
+      pre#out {
+        position: fixed;
+        inset: 40px 40px 40px 40px;
+        margin: 0;
+        padding: 12px;
+        background: #11111b;
+        border: 1px solid var(--accent);
+        overflow: auto;
+        display: none;
+      }
+      pre#out.on {
+        display: block;
       }
     </style>
   </head>
   <body>
-    <header>
-      <span class="title">piw workbench</span>
-      <span class="dim"
-        >beta8-merge · 20261124T063602457Z-…-8814563d · cancelled at final_review_gate</span
-      >
-      <div class="tabs">
-        <button class="tab on" data-mode="inspect">Inspect</button>
-        <button class="tab" data-mode="draft">Draft</button>
-        <button class="tab" data-mode="live">Live</button>
-      </div>
-    </header>
-    <div class="mode-note" id="modeNote"></div>
-    <main>
-      <section id="colLeft"></section>
-      <section id="colMid"></section>
-      <section id="colRight"></section>
-    </main>
-    <footer id="footer"></footer>
-    <div class="modal" id="genModal">
-      <div class="bar">
-        <b id="genTitle">Generated</b>
-        <span class="dimc">deterministic output from the draft spec <span class="p">P3</span></span>
-        <span style="margin-left: auto"></span>
-        <button class="act" id="genSpec">Show spec JSON</button>
-        <button class="act" id="genTs">Show .workflow.ts</button>
-        <button class="act" id="genClose">Close</button>
-      </div>
-      <pre id="genOut"></pre>
+    <div class="bar">
+      <span id="title"></span><span class="mode" id="mode"></span
+      ><span class="dim" id="meta"></span>
     </div>
+    <div id="canvas"></div>
+    <div class="pop" id="pop"></div>
+    <pre id="out"></pre>
+    <div class="keys" id="keys"></div>
 
     <script>
-      // ---- Real data: state.sqlite node_attempts + blobs for run 20261124T063602457Z-beta8-merge-8814563d,
-      // ---- timeouts from grok-build .pi/workflows/beta8-merge.workflow.ts (main 58db6e5d).
-      const RUN = {
-        steps: [
-          {
-            id: "route_host",
-            type: "compute",
-            engine: "completed",
-            ms: 5,
-            timeout: null,
-            note: "routed host=mini",
+      // beta8 run 8814563d: elapsed from state.sqlite node_attempts; limits from beta8-merge.workflow.ts.
+      const T = {
+        agent: ["●", "agent"],
+        compute: ["ƒ", "compute"],
+        shell: ["$", "action"],
+        gate: ["◆", "check"],
+      };
+      const BETA8 = {
+        title: "beta8-merge",
+        meta: "8814563d · cancelled · 8 of 30 steps",
+        nodes: {
+          route_host: { t: "compute", x: 1, y: 0, s: "ok", el: "0s" },
+          resolve_group1_air: { t: "agent", x: 0, y: 1, s: "off", lim: "60m" },
+          resolve_group2_shell: { t: "agent", x: 2, y: 1, s: "ok", el: "16.2m", lim: "60m" },
+          resolve_group3_pager: { t: "agent", x: 2, y: 2, s: "ok", el: "49.3m", lim: "60m" },
+          resolve_group4_acp_session: { t: "agent", x: 2, y: 3, s: "ok", el: "4.9m", lim: "60m" },
+          wait_for_air_gate: { t: "gate", x: 1, y: 4, s: "ok", el: "20.5m" },
+          gather_resolved_files: { t: "shell", x: 1, y: 5, s: "ok", el: "0.7s", lim: "5m" },
+          cargo_check: {
+            t: "shell",
+            x: 1,
+            y: 6,
+            s: "bad",
+            el: "0.1s",
+            lim: "90m",
+            note: "exit 101 shown as ✓",
           },
-          {
-            id: "resolve_group1_air",
-            type: "agent",
-            engine: "not taken",
-            ms: null,
-            timeout: 3600000,
-            untaken: true,
+          final_review_gate: {
+            t: "gate",
+            x: 1,
+            y: 7,
+            s: "bad",
+            el: "36.2m",
+            note: "cancelled by typed text",
           },
-          {
-            id: "air_done",
-            type: "compute",
-            engine: "not taken",
-            ms: null,
-            timeout: null,
-            untaken: true,
+          repair_compile: {
+            t: "agent",
+            x: 2,
+            y: 8,
+            s: "off",
+            lim: "60m",
+            note: "no attempt limit",
           },
-          {
-            id: "resolve_group2_shell",
-            type: "agent",
-            engine: "completed",
-            ms: 969188,
-            timeout: 3600000,
-          },
-          {
-            id: "resolve_group3_pager",
-            type: "agent",
-            engine: "completed",
-            ms: 2959050,
-            timeout: 3600000,
-          },
-          {
-            id: "resolve_group4_acp_session",
-            type: "agent",
-            engine: "completed",
-            ms: 295137,
-            timeout: 3600000,
-          },
-          {
-            id: "wait_for_air_gate",
-            type: "humanDecision",
-            engine: "completed",
-            ms: 1230223,
-            timeout: null,
-            note: "answered: gather",
-          },
-          {
-            id: "gather_resolved_files",
-            type: "shell",
-            engine: "completed",
-            ms: 730,
-            timeout: 300000,
-            exit: 0,
-            tail: "1. Pulling Group 1 files from sab-air beta8-review...\n2. Copying Group 2 files from Mini beta8-shell...\n3. Copying Group 3 files from Mini beta8-pager...\n4. Checking gathered files for conflict markers...\n5. Staging all 151 paths in beta8-rest...\nRemaining unmerged files: 0",
-          },
-          {
-            id: "cargo_check",
-            type: "shell",
-            engine: "completed",
-            ms: 115,
-            timeout: 5400000,
-            exit: 101,
-            parsedOk: false,
-            tail: "error: duplicate key\n  --> crates/codegen/xai-grok-update/Cargo.toml:38:1\n   |\n38 | xai-tty-utils = { workspace = true }\n   | ^^^^^^^^^^^^^\nerror: failed to load manifest for workspace member `/Volumes/Mini-SSD/offload/repos/grok-build/.worktrees/beta8-rest/crates/codegen/xai-grok-pager`\nreferenced by workspace at `/Volumes/Mini-SSD/offload/repos/grok-build/.worktrees/beta8-rest/Cargo.toml`\n\nCaused by:\n  failed to load manifest for dependency `xai-grok-update`",
-          },
-          {
-            id: "final_review_gate",
-            type: "humanDecision",
-            engine: "cancelled",
-            ms: 2169657,
-            timeout: null,
-            note: "plain-text reply cancelled the run (C2)",
-          },
-          {
-            id: "repair_compile",
-            type: "agent",
-            engine: "never ran",
-            ms: null,
-            timeout: 3600000,
-            untaken: true,
-          },
-          {
-            id: "done",
-            type: "compute",
-            engine: "never ran",
-            ms: null,
-            timeout: null,
-            untaken: true,
-          },
+          done: { t: "compute", x: 0, y: 8, s: "off" },
+        },
+        edges: [
+          ["route_host", "resolve_group1_air"],
+          ["route_host", "resolve_group2_shell"],
+          ["resolve_group2_shell", "resolve_group3_pager"],
+          ["resolve_group3_pager", "resolve_group4_acp_session"],
+          ["resolve_group4_acp_session", "wait_for_air_gate"],
+          ["resolve_group1_air", "wait_for_air_gate"],
+          ["wait_for_air_gate", "gather_resolved_files"],
+          ["gather_resolved_files", "cargo_check"],
+          ["cargo_check", "final_review_gate"],
+          ["final_review_gate", "done", "done"],
+          ["final_review_gate", "repair_compile", "repair"],
+          ["repair_compile", "cargo_check", "↺"],
         ],
-        maxSteps: 30,
-        loopSelection: ["cargo_check", "final_review_gate", "repair_compile"],
       };
+      const draftFrom = () => ({
+        title: "check-repair-review",
+        maxSteps: null,
+        nodes: {
+          check: { t: "shell", x: 1, y: 0, lim: null, cmd: "cargo check --workspace --bins" },
+          guard: { t: "compute", x: 1, y: 1, max: null },
+          repair: { t: "agent", x: 2, y: 2, lim: 60, agent: "claude", model: "sonnet" },
+          gate: { t: "gate", x: 1, y: 2 },
+        },
+        edges: [
+          ["check", "gate", "ok"],
+          ["check", "guard", "failed"],
+          ["guard", "repair", "retry"],
+          ["guard", "gate", "max"],
+          ["repair", "check", "↺"],
+        ],
+        ends: [
+          ["gate", "completed", 0],
+          ["gate", "blocked", 2],
+        ],
+      });
 
-      const S = {
-        mode: "inspect",
-        selStep: "cargo_check",
-        picked: new Set(),
-        draft: null, // created by "Make reusable"
-        selNode: "guard",
-        live: null,
-      };
-
-      const fmtMs = (ms) =>
-        ms == null
-          ? "—"
-          : ms < 1000
-            ? ms + "ms"
-            : ms < 60000
-              ? (ms / 1000).toFixed(1) + "s"
-              : (ms / 60000).toFixed(1) + "m";
-      const esc = (s) =>
-        String(s).replace(
-          /[&<>"]/g,
-          (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c],
-        );
+      const S = { mode: "replay", sel: "cargo_check", picked: new Set(), draft: null, live: null };
+      const graph = () => (S.mode === "replay" ? BETA8 : S.draft);
       const $ = (id) => document.getElementById(id);
+      const W = 196,
+        H = 64,
+        GX = 240,
+        GY = 96;
 
-      function verdict(st) {
-        if (st.untaken) return { g: "·", c: "dimc", t: st.engine };
-        if (st.exit != null && st.exit !== 0) return { g: "✗", c: "bad", t: "exit " + st.exit };
-        if (st.engine === "cancelled") return { g: "⊘", c: "warn", t: "cancelled" };
-        return { g: "✓", c: "ok", t: st.engine };
+      function rows(id, n) {
+        const [badge, cls] = T[n.t];
+        if (S.mode === "replay") {
+          const st = { ok: "✓", bad: "✗", off: "·" }[n.s];
+          return `<div class="r"><span class="t-${cls}">${badge}</span> ${st}  ${n.el ? "◷ " + n.el + (n.lim ? " / " + n.lim : "") : ""}</div>
+            <div class="r dim">${n.note || ""}</div>`;
+        }
+        if (S.mode === "draft") {
+          if (id === "guard")
+            return `<div class="r"><span class="t-${cls}">${badge}</span> ↻ ${n.max ? "≤ " + n.max : '<span class="bad-c">—</span>'}</div><div class="r dim">repairs</div>`;
+          if (id === "gate")
+            return `<div class="r"><span class="t-${cls}">${badge}</span> accept · repair · stop</div><div class="r"></div>`;
+          return `<div class="r"><span class="t-${cls}">${badge}</span> ◷ ${n.lim ? n.lim + "m" : '<span class="bad-c">—</span>'}</div><div class="r dim">${n.cmd || n.agent + "/" + n.model}</div>`;
+        }
+        const L = S.live;
+        if (id === "guard")
+          return `<div class="r"><span class="t-${cls}">${badge}</span> ↻ ${L.repairs} / ${L.max}</div><div class="r"></div>`;
+        if (id === "gate")
+          return `<div class="r"><span class="t-${cls}">${badge}</span> ◐ waiting</div><div class="r"><b class="warn-c">1</b> accept <b class="warn-c">2</b> repair <b class="warn-c">3</b> stop</div>`;
+        if (id === "check")
+          return `<div class="r"><span class="t-${cls}">${badge}</span> ✗ ↻ ${L.repairs + 1}  ◷ 0.1s / ${n.lim}m</div><div class="r dim">exit 101</div>`;
+        return `<div class="r"><span class="t-${cls}">${badge}</span> ✓ ↻ ${L.repairs}  ◷ 4m / ${n.lim}m</div><div class="r"></div>`;
       }
 
-      // ---------------- Inspect ----------------
-      function renderInspect() {
-        $("modeNote").innerHTML =
-          "<b>Inspect</b> reads a finished run. Nothing here changes a workflow or a run.";
-        const rows = RUN.steps
-          .map((st) => {
-            const v = verdict(st);
-            const pick = st.untaken
-              ? ""
-              : `<input type="checkbox" data-pick="${st.id}" ${S.picked.has(st.id) ? "checked" : ""}>`;
-            const time =
-              st.ms == null ? "" : `${fmtMs(st.ms)}${st.timeout ? " / " + fmtMs(st.timeout) : ""}`;
-            return `<div class="step ${st.untaken ? "untaken" : ""} ${S.selStep === st.id ? "sel" : ""}" data-step="${st.id}">
-      <span>${pick}</span><span class="${v.c}">${v.g}</span><span>${st.id}</span><span class="dimc">${v.t === "completed" ? "" : v.t + " · "}${time}</span></div>`;
-          })
-          .join("");
-        const sel = RUN.steps.find((s) => s.id === S.selStep);
-        const v = verdict(sel);
-        let detail = `<div class="kv">
-      <div>node</div><div>${sel.id} <span class="dimc">(${sel.type})</span></div>
-      <div>engine status</div><div>${sel.engine}</div>
-      <div>verdict</div><div class="${v.c}">${v.g} ${v.t}</div>
-      <div>elapsed / limit</div><div>${fmtMs(sel.ms)} / ${sel.timeout ? fmtMs(sel.timeout) : sel.type === "humanDecision" ? "—" : "engine default 15.0m"}</div>
-    </div>`;
-        if (sel.exit === 101)
-          detail += `<div class="banner">Engine recorded <b>completed</b>, but the command exited 101 and parse() returned ok:false. <code>allowNonZeroExit</code> hid the failure (C3).</div>`;
-        if (sel.note) detail += `<div class="hint">${esc(sel.note)}</div>`;
-        if (sel.tail) detail += `<pre>${esc(sel.tail)}</pre>`;
-        detail += `<div class="hint">transcript ▸ · tool calls ▸ · validator rejections ▸ <span class="p">P1</span></div>`;
-        $("colLeft").innerHTML =
-          `<h2>Source run · read-only</h2>${rows}<div class="detail">${detail}</div>`;
-
-        const picked = [...S.picked];
-        $("colMid").innerHTML = `<h2>What this run teaches</h2>
-    <div class="log">
-      <div><span class="bad">✗</span> cargo_check failed in 0.1s against a 90.0m limit: the limit was a guess.</div>
-      <div><span class="bad">✗</span> The failure showed as completed; nothing judged the exit code.</div>
-      <div><span class="warn">!</span> The repair loop (gate → repair_compile → cargo_check) had no attempt limit, only maxSteps ${RUN.maxSteps}.</div>
-      <div><span class="warn">!</span> No reviewer between repair and the next check.</div>
-      <div><span class="warn">!</span> The gate waited 36.2m invisibly, then a typed reply cancelled the run.</div>
-    </div>
-    <h2 style="margin-top:14px">Make reusable</h2>
-    <div class="hint">Tick steps on the left. Suggested: the loop ${RUN.loopSelection.join(", ")}.</div>
-    <p><button class="act" id="suggest">Select the loop</button>
-       <button class="act" id="extract" ${picked.length ? "" : "disabled"}>Make reusable from ${picked.length} step(s) ▸</button></p>`;
-        $("colRight").innerHTML = `<h2>Time history</h2>
-    <div class="hint">Real elapsed time from state.sqlite. One run so far; more runs tighten the suggestions. <span class="p">P2</span></div>
-    ${RUN.steps
-      .filter((s) => s.ms != null)
-      .map((s) => {
-        const pct = s.timeout ? Math.min(100, (s.ms / s.timeout) * 100) : 0;
-        return `<div style="margin-top:6px">${s.id} <span class="dimc">${fmtMs(s.ms)}${s.timeout ? " of " + fmtMs(s.timeout) : ""}</span>
-        ${s.timeout ? `<div class="meter"><div style="width:${Math.max(pct, 0.6)}%"></div></div>` : ""}</div>`;
-      })
-      .join("")}`;
-        $("footer").innerHTML =
-          `<span class="label">Run</span> ${RUN.steps.filter((s) => s.ms != null).length} steps of maxSteps ${RUN.maxSteps} · ended cancelled`;
-
-        document.querySelectorAll("[data-step]").forEach((el) =>
-          el.addEventListener("click", (e) => {
-            if (e.target.matches("input")) return;
-            S.selStep = el.dataset.step;
-            render();
-          }),
+      function missing(id, n) {
+        return (
+          S.mode === "draft" &&
+          ((id === "guard" && !n.max) || (n.t !== "compute" && n.t !== "gate" && !n.lim))
         );
-        document.querySelectorAll("[data-pick]").forEach((el) =>
-          el.addEventListener("change", () => {
-            el.checked ? S.picked.add(el.dataset.pick) : S.picked.delete(el.dataset.pick);
-            render();
-          }),
-        );
-        $("suggest").onclick = () => {
-          S.picked = new Set(RUN.loopSelection);
-          render();
-        };
-        $("extract").onclick = () => {
-          makeReusable([...S.picked]);
-        };
+      }
+      function cardClass(id, n) {
+        const c = ["card"];
+        if (S.mode === "replay") c.push(n.s);
+        else if (S.mode === "live") c.push(id === "gate" ? "wait" : id === "check" ? "bad" : "ok");
+        if (missing(id, n)) c.push("missing");
+        if (S.sel === id) c.push("sel");
+        if (S.picked.has(id)) c.push("picked");
+        return c.join(" ");
       }
 
-      // ---------------- Draft ----------------
-      function makeReusable(picked) {
-        const cc = RUN.steps.find((s) => s.id === "cargo_check");
-        S.draft = {
-          schema: "piw-workbench.draft.v0",
-          name: "check-repair-review",
-          fromRun: "20261124T063602457Z-beta8-merge-8814563d",
-          fromSteps: picked,
-          maxSteps: "",
-          inputs: {
-            cwd: "/Volumes/Mini-SSD/offload/repos/grok-build/.worktrees/beta8-rest",
-            checkCommand: "cargo check --workspace --bins",
-          },
-          nodes: {
-            check: {
-              block: "check",
-              timeoutMin: "",
-              judge: "exitCode",
-              note: `past: ${fmtMs(cc.ms)} (exit ${cc.exit}); old limit ${fmtMs(cc.timeout)}`,
-            },
-            guard: {
-              block: "guard",
-              maxRepairs: "",
-              noProgress: "same-errors-twice",
-              liveRaise: "human",
-            },
-            repair: {
-              block: "repair",
-              agent: "claude",
-              model: "sonnet",
-              timeoutMin: "60",
-              reviewer: "none",
-            },
-            gate: { block: "gate", choices: "accept, repair, stop", typedAnswers: true },
-          },
+      function render() {
+        const g = graph();
+        $("title").textContent = g.title;
+        $("mode").textContent = `(${S.mode})`;
+        $("meta").innerHTML =
+          S.mode === "replay"
+            ? g.meta
+            : S.mode === "draft"
+              ? `maxSteps ${g.maxSteps ?? '<span class="bad-c">—</span>'}`
+              : `steps ${S.live.steps} / ${g.maxSteps}`;
+        const pos = (id) => {
+          const n = g.nodes[id];
+          return [n.x * GX, n.y * GY];
         };
-        S.selNode = "guard";
-        S.mode = "draft";
+        let svg = `<svg><defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0L10,5L0,10z" fill="#6c7086"/></marker></defs>`;
+        for (const [a, b, label] of g.edges) {
+          const [ax, ay] = pos(a),
+            [bx, by] = pos(b);
+          let d, lx, ly;
+          if (by <= ay) {
+            // loop back: right-hand gutter
+            const gx = Math.max(ax, bx) + W + 24;
+            d = `M${ax + W},${ay + H / 2} L${gx},${ay + H / 2} L${gx},${by + H / 2} L${bx + W + 2},${by + H / 2}`;
+            lx = gx + 4;
+            ly = (ay + by) / 2 + H / 2;
+          } else {
+            d = `M${ax + W / 2},${ay + H} L${bx + W / 2},${by - 2}`;
+            lx = (ax + bx) / 2 + W / 2 + 4;
+            ly = (ay + H + by) / 2;
+          }
+          svg += `<path class="edge" d="${d}"/>${label ? `<text class="el" x="${lx}" y="${ly}">${label}</text>` : ""}`;
+        }
+        let html = "";
+        for (const [id, n] of Object.entries(g.nodes)) {
+          const [x, y] = pos(id);
+          html += `<div class="${cardClass(id, n)}" data-id="${id}" style="left:${x}px;top:${y}px"><div class="h">${id}</div>${rows(id, n)}</div>`;
+        }
+        for (const [from, label, col] of g.ends || []) {
+          const [, y] = pos(from);
+          html += `<div class="end" style="left:${col * GX + W / 2 - 40}px;top:${y + GY + 4}px">■ ${label}</div>`;
+          svg += `<path class="edge" d="M${pos(from)[0] + W / 2},${y + H} L${col * GX + W / 2},${y + GY}"/>`;
+        }
+        const maxY = Math.max(...Object.values(g.nodes).map((n) => n.y)) + 2;
+        $("canvas").style.height = maxY * GY + "px";
+        $("canvas").innerHTML = svg + "</svg>" + html;
+        document.querySelectorAll(".card").forEach(
+          (el) =>
+            (el.onclick = () => {
+              S.sel = el.dataset.id;
+              render();
+              if (S.mode === "draft") edit();
+            }),
+        );
+        $("keys").innerHTML = keys();
+      }
+
+      function keys() {
+        const k = (key, label) => `<b>${key}</b> ${label}`;
+        if (S.mode === "replay")
+          return [
+            k("←↑↓→", "move"),
+            k("space", "pick"),
+            k("w", `make reusable${S.picked.size ? " (" + S.picked.size + ")" : ""}`),
+            k("2", "draft"),
+          ].join("   ");
+        if (S.mode === "draft") {
+          const miss = draftMissing();
+          return [
+            k("enter", "edit"),
+            k("m", "maxSteps"),
+            miss.length
+              ? `<span class="bad-c">missing: ${miss.join(", ")}</span>`
+              : k("s", "save .workflow.ts"),
+            k("1", "replay"),
+            k("3", "live"),
+          ].join("   ");
+        }
+        return [
+          k("1 2 3", "answer gate"),
+          k("+", "raise ↻"),
+          k("p", "pause"),
+          k("x", "cancel"),
+          `<span class="dim">${S.live.log.at(-1) || ""}</span>`,
+        ].join("   ");
+      }
+
+      function draftMissing() {
+        const d = S.draft,
+          m = [];
+        for (const [id, n] of Object.entries(d.nodes))
+          if (missing(id, n)) m.push(id === "guard" ? "guard ↻" : id + " ◷");
+        if (!d.maxSteps) m.push("maxSteps");
+        return m;
+      }
+
+      // --- draft editing: one small popup, only that node's limit fields
+      function edit() {
+        const n = S.draft.nodes[S.sel],
+          f = [];
+        if (S.sel === "guard") f.push(["max", "↻ repairs"]);
+        if (n.lim !== undefined) f.push(["lim", "◷ minutes"]);
+        if (!f.length) return;
+        $("pop").innerHTML =
+          `<div>${S.sel}</div>` +
+          f
+            .map(
+              ([k, l]) => `<div class="row">${l} <input data-k="${k}" value="${n[k] ?? ""}"></div>`,
+            )
+            .join("") +
+          `<div class="dim">enter save · esc close</div>`;
+        $("pop").classList.add("on");
+        $("pop").querySelector("input").focus();
+      }
+      function closePop(save) {
+        if (save)
+          $("pop")
+            .querySelectorAll("input")
+            .forEach((i) => {
+              const v = +i.value;
+              const tgt = i.dataset.k === "maxSteps" ? S.draft : S.draft.nodes[S.sel];
+              tgt[i.dataset.k] = v > 0 ? v : null;
+            });
+        $("pop").classList.remove("on");
         render();
       }
-
-      const BLOCKS = [
-        ["check", "shell + parse ok from exit code"],
-        ["guard", "settingsRoute: limit + no-progress"],
-        ["repair", "agent + validate"],
-        ["gate", "humanDecision"],
-        ["reviewer", "agent: approve | needs_work"],
-        ["scout", "read-only agent"],
-        ["plan-approve", "agent + humanDecision"],
-        ["finish", "shell: commit + push"],
-      ];
-
-      function preflight(d) {
-        const issues = [];
-        if (!(+d.nodes.guard.maxRepairs > 0))
-          issues.push({ sev: "block", node: "guard", text: "repair loop has no attempt limit" });
-        if (!(+d.nodes.check.timeoutMin > 0))
-          issues.push({ sev: "block", node: "check", text: "check has no time limit" });
-        if (!(+d.nodes.repair.timeoutMin > 0))
-          issues.push({ sev: "block", node: "repair", text: "repair has no time limit" });
-        if (d.nodes.check.judge !== "exitCode")
-          issues.push({ sev: "block", node: "check", text: "check is not judged by exit code" });
-        if (!d.inputs.checkCommand.trim())
-          issues.push({ sev: "block", node: "check", text: "no check command" });
-        if (!(+d.maxSteps > 0))
-          issues.push({
-            sev: "block",
-            node: null,
-            text: "maxSteps not set (engine default 100; fixed at launch)",
-          });
-        if (d.nodes.repair.reviewer === "none")
-          issues.push({
-            sev: "warn",
-            node: "repair",
-            text: "no reviewer between repair and the next check",
-          });
-        const mr = +d.nodes.guard.maxRepairs || 0;
-        const need = 1 + mr * 3 + 3;
-        if (+d.maxSteps > 0 && +d.maxSteps < need)
-          issues.push({
-            sev: "warn",
-            node: null,
-            text: `maxSteps ${d.maxSteps} is below what ${mr} repairs can use (~${need})`,
-          });
-        return issues;
+      function editMaxSteps() {
+        $("pop").innerHTML =
+          `<div>workflow</div><div class="row">maxSteps <input data-k="maxSteps" value="${S.draft.maxSteps ?? ""}"></div><div class="dim">fixed for the whole run</div>`;
+        $("pop").classList.add("on");
+        $("pop").querySelector("input").focus();
       }
 
-      function nodeMissing(id, issues) {
-        return issues.some((i) => i.sev === "block" && i.node === id);
-      }
-
-      function renderDraft() {
-        $("modeNote").innerHTML =
-          "<b>Draft</b> edits the workflow file for the <b>next</b> run. It never touches a run in progress.";
-        if (!S.draft) {
-          $("colLeft").innerHTML =
-            `<h2>No draft yet</h2><div class="hint">Go to Inspect, select steps, and click Make reusable.</div>`;
-          $("colMid").innerHTML = "";
-          $("colRight").innerHTML = "";
-          $("footer").innerHTML = "";
-          return;
-        }
+      // --- generated file
+      function generate() {
         const d = S.draft,
-          issues = preflight(d);
-        const used = new Set(Object.values(d.nodes).map((n) => n.block));
-        $("colLeft").innerHTML = `<h2>Library</h2>
-    <div class="lib">${BLOCKS.map(([b, p]) => `<span class="chip ${used.has(b) ? "used" : ""}" title="${p}">${b}</span>`).join("")}</div>
-    <div class="hint">Blocks map 1:1 to pi-workflows primitives (hover). Templates from past workflows appear here once saved.</div>
-    <h2 style="margin-top:14px">Inputs</h2>
-    <div class="field"><label>cwd <span class="req">*</span></label><input data-input="cwd" value="${esc(d.inputs.cwd)}"></div>
-    <div class="field"><label>check command <span class="req">*</span></label><input data-input="checkCommand" value="${esc(d.inputs.checkCommand)}"></div>
-    <div class="field"><label>workflow maxSteps <span class="req">*</span></label><input data-top="maxSteps" class="${+d.maxSteps > 0 ? "" : "missing"}" value="${esc(d.maxSteps)}" placeholder="fixed at launch">
-      <div class="hint">Run-wide bound. Cannot change during a run.</div></div>
-    <div class="hint">From ${d.fromRun.slice(-8)}: ${d.fromSteps.join(", ")}</div>`;
-
-        const N = {
-          check: [20, 30],
-          guard: [190, 30],
-          repair: [190, 140],
-          gate: [360, 30],
-          completed: [360, 140],
-          blocked: [360, 210],
-        };
-        const box = (id, label) => {
-          const [x, y] = N[id];
-          const cls = [
-            "node",
-            S.selNode === id ? "sel" : "",
-            nodeMissing(id, issues) ? "missing" : "",
-          ].join(" ");
-          return `<g class="${cls}" data-node="${id}"><rect x="${x}" y="${y}" width="130" height="34" rx="5"></rect><text x="${x + 10}" y="${y + 21}">${label}</text></g>`;
-        };
-        const mr = d.nodes.guard.maxRepairs || "?";
-        $("colMid").innerHTML = `<h2>Draft · ${d.name}</h2>
-    <svg width="100%" viewBox="0 0 510 260">
-      <defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#778"/></marker></defs>
-      <path class="edge" d="M150,47 L188,47"/>
-      <path class="edge" d="M320,47 L358,47"/><text class="elabel" x="322" y="40">pass</text>
-      <path class="edge" d="M255,64 L255,138"/><text class="elabel" x="260" y="100">retry ≤ ${mr}</text>
-      <path class="edge" d="M190,157 L85,157 L85,66"/><text class="elabel" x="95" y="150">re-check</text>
-      <path class="edge" d="M320,58 Q345,58 360,50"/><text class="elabel" x="300" y="78">exhausted</text>
-      <path class="edge" d="M425,64 L425,138"/><text class="elabel" x="430" y="100">accept</text>
-      <path class="edge" d="M490,47 Q505,140 492,222"/><text class="elabel" x="470" y="200">stop</text>
-      <path class="edge" d="M380,64 Q330,120 322,150"/><text class="elabel" x="318" y="125">repair</text>
-      ${box("check", "check")}${box("guard", "guard")}${box("repair", "repair")}${box("gate", "review gate")}${box("completed", "exit: completed")}${box("blocked", "exit: blocked")}
-    </svg>
-    <div class="hint">"repair" at the gate still passes the guard, so it counts against the limit. Going past it means raising the limit (Live, human only).</div>`;
-
-        $("colRight").innerHTML = `<h2>Inspector · ${S.selNode}</h2>${inspector(d, S.selNode)}`;
-
-        const blocks = issues.filter((i) => i.sev === "block"),
-          warns = issues.filter((i) => i.sev === "warn");
-        $("footer").innerHTML = `<span class="label">Preflight</span>
-    ${blocks.map((i) => `<span class="bad">✗ ${esc(i.text)}</span>`).join("")}
-    ${warns.map((i) => `<span class="warn">⚠ ${esc(i.text)}</span>`).join("")}
-    ${blocks.length ? "" : `<span class="ok">✓ ready to generate</span>`}
-    <span style="margin-left:auto"></span>
-    <button class="act" id="gen" ${blocks.length ? "disabled" : ""}>Generate .workflow.ts ▸ diff</button>`;
-
-        document.querySelectorAll("[data-node]").forEach((el) =>
-          el.addEventListener("click", () => {
-            if (S.draft.nodes[el.dataset.node]) {
-              S.selNode = el.dataset.node;
-              render();
-            }
-          }),
-        );
-        document.querySelectorAll("[data-input]").forEach((el) =>
-          el.addEventListener("change", () => {
-            d.inputs[el.dataset.input] = el.value;
-            render();
-          }),
-        );
-        document.querySelectorAll("[data-top]").forEach((el) =>
-          el.addEventListener("change", () => {
-            d[el.dataset.top] = el.value;
-            render();
-          }),
-        );
-        document.querySelectorAll("[data-f]").forEach((el) =>
-          el.addEventListener("change", () => {
-            d.nodes[S.selNode][el.dataset.f] = el.value;
-            render();
-          }),
-        );
-        const g = $("gen");
-        if (g) g.onclick = () => openGen("ts");
-      }
-
-      function f(label, key, val, opts = {}) {
-        const missing = opts.req && !(String(val).trim() && (!opts.num || +val > 0));
-        const input = opts.select
-          ? `<select data-f="${key}">${opts.select.map((o) => `<option ${o === val ? "selected" : ""}>${o}</option>`).join("")}</select>`
-          : `<input data-f="${key}" value="${esc(val)}" class="${missing ? "missing" : ""}" placeholder="${opts.ph || ""}">`;
-        return `<div class="field"><label>${label} ${opts.req ? '<span class="req">*</span>' : ""}</label>${input}${opts.hint ? `<div class="hint">${opts.hint}</div>` : ""}</div>`;
-      }
-
-      function inspector(d, id) {
-        const n = d.nodes[id];
-        if (id === "check")
-          return `<div class="hint">primitive: shell({ exec, parse }) with allowNonZeroExit; parse returns ok from the exit code</div>
-    ${f("time limit (min)", "timeoutMin", n.timeoutMin, { req: true, num: true, ph: "e.g. 30", hint: n.note + " <span class='p'>P2</span>" })}
-    ${f("judged by", "judge", n.judge, { select: ["exitCode", "none"], hint: "exitCode: a non-zero exit routes to repair, never shows ✓" })}`;
-        if (id === "guard")
-          return `<div class="hint">primitive: settingsRoute reading settings.maxRepairs and steps</div>
-    ${f("max repairs", "maxRepairs", n.maxRepairs, { req: true, num: true, ph: "no default", hint: "Initial value of settings.maxRepairs." })}
-    ${f("no-progress rule", "noProgress", n.noProgress, { select: ["same-errors-twice", "off"], hint: "Stop early when a repair changes nothing." })}
-    ${f("who may raise it during a run", "liveRaise", n.liveRaise, { select: ["human", "human+session", "nobody"], hint: "Becomes the settings path permission for /maxRepairs." })}`;
-        if (id === "repair")
-          return `<div class="hint">primitive: agent({ agent, model, prompt, validate })</div>
-    ${f("agent", "agent", n.agent, { select: ["claude", "codex", "grok", "pi"] })}
-    ${f("model", "model", n.model, { req: true })}
-    ${f("time limit (min)", "timeoutMin", n.timeoutMin, { req: true, num: true })}
-    ${f("reviewer after repair", "reviewer", n.reviewer, { select: ["none", "codex", "claude-opus"], hint: "Adds a reviewer block: approve | needs_work with a reason." })}`;
-        if (id === "gate")
-          return `<div class="hint">primitive: humanDecision + humanDecisionEdge</div>
-    ${f("choices", "choices", n.choices, { hint: "accept → completed · repair → guard → repair · stop → blocked" })}
-    <div class="hint">Typed answers are matched to a choice. Driver work, not a workflow field (C2).</div>`;
-        return "";
-      }
-
-      // ---------------- Generator (spec → .workflow.ts) ----------------
-      function generate(d) {
-        const n = d.nodes,
-          min = (m) => `${(+m * 60000).toLocaleString("en-US").replace(/,/g, "_")}`;
-        const perm = { human: '["human"]', "human+session": '["session", "human"]', nobody: "[]" }[
-          n.guard.liveRaise
-        ];
-        const noProg = n.guard.noProgress === "same-errors-twice";
-        const reviewer = n.repair.reviewer !== "none";
-        return `// Generated by piw workbench from ${d.fromRun} (${d.fromSteps.join(", ")}).
-import {
+          n = d.nodes;
+        return `import {
   agent, allowSettingsPath, choice, compute, defineHumanChoices, defineWorkflow,
-  humanDecision, humanDecisionEdge, settingsRoute, shell, workflowSettings,
+  humanDecision, humanDecisionEdge, idempotentEffect, settingsRoute, shell, workflowSettings,
 } from "@osolmaz/pi-workflows";
 
 const settings = workflowSettings({
-  initial: { maxRepairs: ${+n.guard.maxRepairs} },
+  initial: { maxRepairs: ${n.guard.max} },
   parse: (v) => v as { maxRepairs: number },
-  paths: [allowSettingsPath("/maxRepairs", { read: ["session", "human"], replace: ${perm} })],
+  paths: [allowSettingsPath("/maxRepairs", { read: ["human"], replace: ["human"] })],
 });
-
 const gateChoices = defineHumanChoices({
   accept: choice({ label: "Accept" }),
   repair: choice({ label: "Repair again" }),
-  stop: choice({ label: "Stop (blocked)" }),
+  stop: choice({ label: "Stop" }),
 });
 
 export default defineWorkflow({
-  name: "${d.name}",
+  name: "${d.title}",
   settings,
-  maxSteps: ${+d.maxSteps},
+  maxSteps: ${d.maxSteps},
   startAt: "check",
   nodes: {
     check: shell({
-      timeoutMs: ${min(n.check.timeoutMin)},
-      exec: ({ input }) => ({ command: "bash", args: ["-c", input.checkCommand], cwd: input.cwd, allowNonZeroExit: true }),
-      parse: (r) => ({ ok: r.exitCode === 0, exitCode: r.exitCode, errors: errorLines(r.stdout + r.stderr) }),
+      effect: idempotentEffect("check"),
+      timeoutMs: ${n.check.lim * 60000},
+      exec: ({ input }) => {
+        const { cwd, checkCommand } = input as { cwd: string; checkCommand: string };
+        return { command: "bash", args: ["-c", checkCommand], cwd };
+      },
     }),
     guard: settingsRoute({
-      run: ({ outputs, steps, settings }) =>
-        outputs.check.ok ? { route: "review" }
-        : repairsSoFar(steps) >= settings.maxRepairs ? { route: "exhausted" }${
-          noProg
-            ? `
-        : sameErrorsAsLastCheck(steps, outputs.check) ? { route: "exhausted" }`
-            : ""
-        }
-        : { route: "repair" },
+      run: ({ state, settings }) => ({
+        route: state.steps.filter((s) => s.nodeId === "repair").length < (settings as { maxRepairs: number }).maxRepairs ? "retry" : "max",
+      }),
     }),
     repair: agent({
       agent: "${n.repair.agent}",
       model: "${n.repair.model}",
-      timeoutMs: ${min(n.repair.timeoutMin)},
-      prompt: ({ input, outputs }) => repairPrompt(input, outputs.check),
-      validate: requireNotes,
-    }),${
-      reviewer
-        ? `
-    review_repair: agent({
-      agent: "${n.repair.reviewer.split("-")[0]}",
-      prompt: ({ outputs }) => reviewPrompt(outputs.repair),
-      validate: verdictWithReason, // { verdict: "approve" | "needs_work", reason }
-    }),`
-        : ""
-    }
+      timeoutMs: ${n.repair.lim * 60000},
+      prompt: ({ results }) => \`Fix these errors, then stop:\\n\${results.check.error}\`,
+    }),
     gate: humanDecision({
       audience: "operator",
       choices: gateChoices,
-      request: ({ outputs }) => checkSummary(outputs.check),
+      request: ({ results }) => ({
+        title: results.check.outcome === "ok" ? "check passed" : "check still failing",
+        subject: { check: results.check },
+        presentation: {
+          schema: "pi-workflows.decision-presentation.v1",
+          summary: "Accept, repair again, or stop.",
+          blocks: [{ kind: "preformatted", text: results.check.error ?? "(no errors)" }],
+        },
+      }),
     }),
-    completed: compute({ run: ({ outputs }) => ({ check: outputs.check }) }),
-    blocked: compute({ run: ({ outputs }) => ({ check: outputs.check }) }),
+    completed: compute({ run: () => ({ ok: true }) }),
+    blocked: compute({ run: () => ({ ok: false }) }),
   },
   edges: [
-    { from: "check", to: "guard" },
-    { from: "guard", switch: { on: "$.route", cases: { review: "gate", exhausted: "gate", repair: "repair" } } },
-    ${
-      reviewer
-        ? `{ from: "repair", to: "review_repair" },
-    { from: "review_repair", switch: { on: "$.verdict", cases: { approve: "check", needs_work: "repair" } } },`
-        : `{ from: "repair", to: "check" },`
-    }
+    { from: "check", switch: { on: "$result.outcome", cases: { ok: "gate", failed: "guard", timed_out: "guard" } } },
+    { from: "guard", switch: { on: "$.route", cases: { retry: "repair", max: "gate" } } },
+    { from: "repair", to: "check" },
     humanDecisionEdge({ from: "gate", choices: gateChoices, cases: { accept: "completed", repair: "repair", stop: "blocked" } }),
   ],
-  exits: {
-    completed: { from: "completed" },
-    blocked: { from: "blocked" },
-  },
-});
-
-// In beta8-merge.workflow.ts the loop becomes one include:
-//   includes: { verify: includeWorkflow(checkRepairReview, { input: () => ({
-//     cwd: ${JSON.stringify(d.inputs.cwd)},
-//     checkCommand: ${JSON.stringify(d.inputs.checkCommand)} }) }) }
-//   edges: gather_resolved_files → verify · verify.completed → done · verify.blocked → stopped
-`;
+});`;
       }
 
-      function openGen(kind) {
-        $("genModal").classList.add("on");
-        $("genTitle").textContent =
-          kind === "ts" ? `${S.draft.name}.workflow.ts` : "draft spec JSON";
-        $("genOut").textContent =
-          kind === "ts" ? generate(S.draft) : JSON.stringify(S.draft, null, 2);
-      }
-      $("genClose").onclick = () => $("genModal").classList.remove("on");
-      $("genTs").onclick = () => openGen("ts");
-      $("genSpec").onclick = () => openGen("spec");
-
-      // ---------------- Live (mock: not connected) ----------------
-      function renderLive() {
-        $("modeNote").innerHTML =
-          "<b>Live</b> changes a run in progress. Changes apply from the next attempt. <b>Mock:</b> not connected to piw serve <span class='p'>P4</span>; actions below only log what would be sent.";
-        if (!S.draft || preflight(S.draft).some((i) => i.sev === "block")) {
-          $("colLeft").innerHTML =
-            `<h2>No launchable draft</h2><div class="hint">Finish the draft until preflight is green.</div>`;
-          $("colMid").innerHTML = "";
-          $("colRight").innerHTML = "";
-          $("footer").innerHTML = "";
+      // --- keyboard
+      const move = (dx, dy) => {
+        const g = graph(),
+          cur = g.nodes[S.sel];
+        let best = null,
+          bd = 1e9;
+        for (const [id, n] of Object.entries(g.nodes)) {
+          const ddx = n.x - cur.x,
+            ddy = n.y - cur.y;
+          if (id === S.sel || (dx && Math.sign(ddx) !== dx) || (dy && Math.sign(ddy) !== dy))
+            continue;
+          const dist = Math.abs(ddx) + Math.abs(ddy) * 1.1;
+          if (dist < bd) {
+            bd = dist;
+            best = id;
+          }
+        }
+        if (best) {
+          S.sel = best;
+          render();
+        }
+      };
+      const setMode = (m) => {
+        if (m !== "replay" && !S.draft) return;
+        if (m === "live" && draftMissing().length) return;
+        if (m === "live" && !S.live)
+          S.live = { repairs: 1, max: S.draft.nodes.guard.max, steps: 5, log: [] };
+        S.mode = m;
+        S.sel = Object.keys(graph().nodes).includes(S.sel)
+          ? S.sel
+          : m === "live"
+            ? "gate"
+            : "check";
+        render();
+      };
+      document.addEventListener("keydown", (e) => {
+        if ($("pop").classList.contains("on")) {
+          if (e.key === "Enter") closePop(true);
+          if (e.key === "Escape") closePop(false);
           return;
         }
-        if (!S.live)
-          S.live = { repairs: 1, maxRepairs: +S.draft.nodes.guard.maxRepairs, steps: 5, log: [] };
+        if ($("out").classList.contains("on")) {
+          if (e.key === "Escape") $("out").classList.remove("on");
+          return;
+        }
+        const k = e.key;
+        if (k === "ArrowLeft" || k === "h") move(-1, 0);
+        else if (k === "ArrowRight" || k === "l") move(1, 0);
+        else if (k === "ArrowUp" || k === "k") move(0, -1);
+        else if (k === "ArrowDown" || k === "j") move(0, 1);
+        else if (S.mode === "replay" && k === " ") {
+          e.preventDefault();
+          S.picked.has(S.sel) ? S.picked.delete(S.sel) : S.picked.add(S.sel);
+          render();
+        } else if (S.mode === "replay" && k === "w" && S.picked.size) {
+          S.draft = draftFrom();
+          S.picked.clear();
+          setMode("draft");
+        } else if (k === "1") S.mode === "live" ? answer(1) : setMode("replay");
+        else if (k === "2") S.mode === "live" ? answer(2) : setMode("draft");
+        else if (k === "3") S.mode === "live" ? answer(3) : setMode("live");
+        else if (S.mode === "draft" && k === "Enter") edit();
+        else if (S.mode === "draft" && k === "m") editMaxSteps();
+        else if (S.mode === "draft" && k === "s" && !draftMissing().length) {
+          $("out").textContent = generate();
+          $("out").classList.add("on");
+        } else if (S.mode === "live" && k === "+") {
+          S.live.max++;
+          S.live.log.push(`↻ limit → ${S.live.max} (next attempt)`);
+          render();
+        } else if (S.mode === "live" && k === "p") {
+          S.live.log.push("pause sent");
+          render();
+        } else if (S.mode === "live" && k === "x") {
+          S.live.log.push("cancel sent");
+          render();
+        }
+      });
+      function answer(i) {
         const L = S.live,
-          d = S.draft;
-        $("colLeft").innerHTML = `<h2>Run · ${d.name} (example state)</h2>
-    <div class="step"><span></span><span class="ok">✓</span><span>check #1</span><span class="bad">exit 101</span></div>
-    <div class="step"><span></span><span class="ok">✓</span><span>guard</span><span class="dimc">→ repair</span></div>
-    <div class="step"><span></span><span class="ok">✓</span><span>repair #1</span><span class="dimc">notes submitted</span></div>
-    <div class="step"><span></span><span class="bad">✗</span><span>check #2</span><span class="bad">exit 101 · same errors</span></div>
-    <div class="step sel"><span></span><span class="warn">◐</span><span>gate</span><span class="warn">waiting for you</span></div>
-    <h2 style="margin-top:12px">Budgets</h2>
-    <div>repairs ${L.repairs} of ${L.maxRepairs}</div><div class="meter"><div style="width:${(L.repairs / L.maxRepairs) * 100}%"></div></div>
-    <div>steps ${L.steps} of ${d.maxSteps} <span class="dimc">(fixed)</span></div><div class="meter"><div style="width:${(L.steps / d.maxSteps) * 100}%"></div></div>`;
-        $("colMid").innerHTML = `<h2>Gate</h2>
-    <div class="gatecard"><b>check failed twice with the same errors</b> <span class="dimc">(guard: exhausted by no-progress)</span>
-      <pre>${esc(
-        RUN.steps
-          .find((s) => s.id === "cargo_check")
-          .tail.split("\n")
-          .slice(0, 5)
-          .join("\n"),
-      )}</pre>
-      <div class="field"><label>Answer (type, or a choice name)</label><input id="gateAns" placeholder="accept · repair · stop · or a sentence"></div>
-      <button class="act" id="gateSend">Send answer</button>
-      <div class="hint" id="gateMatch"></div></div>`;
-        $("colRight").innerHTML = `<h2>Controls</h2>
-    <div class="field"><label>max repairs (settings /maxRepairs)</label><input id="raise" value="${L.maxRepairs}"></div>
-    <button class="act" id="raiseSend">Apply from next attempt</button>
-    <p><button class="act" id="pause">Pause</button> <button class="act" id="cancel">Cancel run</button></p>
-    <h2 style="margin-top:12px">Would send</h2><div class="log">${L.log.map((x) => `<div>${esc(x)}</div>`).join("") || '<div class="dimc">nothing yet</div>'}</div>`;
-        $("footer").innerHTML =
-          `<span class="label">Live</span> gate answers and settings changes go through piw serve <span class="p">P4</span> · maxSteps cannot change`;
-
-        const choices = ["accept", "repair", "stop"];
-        const match = (t) => {
-          t = t.trim().toLowerCase();
-          return choices.find((c) => t === c || t.startsWith(c) || t.includes(c)) || null;
-        };
-        $("gateAns").oninput = (e) => {
-          const m = match(e.target.value);
-          $("gateMatch").innerHTML = e.target.value
-            ? m
-              ? `matches <b>${m}</b>; the rest is kept as a note`
-              : `<span class="warn">no choice matched; it will ask again, it will not cancel</span>`
-            : "";
-        };
-        $("gateSend").onclick = () => {
-          const t = $("gateAns").value,
-            m = match(t);
-          if (!m) {
-            L.log.push(`(not sent) "${t}": no choice matched, gate stays open`);
-          } else if (m === "repair" && L.repairs >= L.maxRepairs) {
-            L.log.push(
-              `(not sent) repair refused: ${L.repairs} of ${L.maxRepairs} used. Raise max repairs first.`,
-            );
-          } else {
-            L.log.push(`humanDecision submit {choice:"${m}", note:${JSON.stringify(t)}}`);
-            if (m === "repair") L.repairs++;
-          }
-          render();
-        };
-        $("raiseSend").onclick = () => {
-          const v = +$("raise").value;
-          if (d.nodes.guard.liveRaise === "nobody")
-            L.log.push("(not sent) /maxRepairs is not changeable during a run");
-          else if (v > 0) {
-            L.log.push(
-              `settings patch [{op:"replace", path:"/maxRepairs", value:${v}}] actor=human`,
-            );
-            L.maxRepairs = v;
-          }
-          render();
-        };
-        $("pause").onclick = () => {
-          L.log.push("pause run (holds at next step boundary)");
-          render();
-        };
-        $("cancel").onclick = () => {
-          L.log.push("cancel run");
-          render();
-        };
+          c = ["accept", "repair", "stop"][i - 1];
+        if (c === "repair" && L.repairs >= L.max)
+          L.log.push(`↻ ${L.repairs}/${L.max} used: press + first`);
+        else {
+          L.log.push(`answered: ${c}`);
+          if (c === "repair") L.repairs++;
+        }
+        render();
       }
 
-      function render() {
-        document
-          .querySelectorAll(".tab")
-          .forEach((t) => t.classList.toggle("on", t.dataset.mode === S.mode));
-        ({ inspect: renderInspect, draft: renderDraft, live: renderLive })[S.mode]();
-      }
-      document.querySelectorAll(".tab").forEach((t) =>
-        t.addEventListener("click", () => {
-          S.mode = t.dataset.mode;
-          render();
-        }),
-      );
-
-      // Agent hook for `terminal-browser action -- eval`: read state, fill fields, switch modes.
       window.workbench = {
         state: () =>
           JSON.parse(
             JSON.stringify({
               mode: S.mode,
+              sel: S.sel,
               draft: S.draft,
-              preflight: S.draft ? preflight(S.draft) : null,
               live: S.live,
+              missing: S.draft ? draftMissing() : null,
             }),
           ),
-        mode: (m) => {
-          S.mode = m;
-          render();
-          return m;
-        },
-        makeReusable: (steps = RUN.loopSelection) => {
-          makeReusable(steps);
-          return S.draft.name;
-        },
-        set: (path, value) => {
-          const k = path.split(".");
-          let o = S.draft;
-          while (k.length > 1) o = o[k.shift()];
-          o[k[0]] = value;
-          render();
-          return preflight(S.draft);
-        },
-        generate: () => generate(S.draft),
+        generate,
       };
       render();
     </script>
