@@ -18,7 +18,7 @@ Dry run and send print the same cost screen. Sending refuses an estimate above 2
 The key is read from the environment variable named by --key-env and never printed.
 A finished send appends one line to runs.jsonl in the state directory.
 """
-import argparse, importlib.util, json, os, re, signal, sys, threading, time, urllib.error, urllib.request
+import argparse, importlib.util, json, os, re, shutil, signal, subprocess, sys, tempfile, threading, time, urllib.error, urllib.request
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -43,6 +43,7 @@ FILE_RE = re.compile(
 
 USAGE = """usage: slices <command> ...
 
+  acp TASKS.py ...    dry-render ACP packets or send ONE slice via acpx -> agy acp (Neon medium)
   send TASKS.py ...   dry run or send a batch: cost screen, 30 s countdown, run record
   show TASKS.py ...   the cost screen only; sends nothing, writes nothing
   runs                recorded runs, newest first
@@ -50,7 +51,7 @@ USAGE = """usage: slices <command> ...
   ledger              the run ledger (references/runs.md)
 
 Run records go to runs.jsonl in $SLICES_STATE_DIR (default ~/.local/state/slices).
-`slices send --help` lists the send flags."""
+`slices acp --help` and `slices send --help` list the command flags."""
 
 
 def fail(msg: str):
@@ -120,6 +121,10 @@ def build_prompt(parts, task) -> str:
         + task["prompt"].strip()
         + "\n"
     )
+
+
+def build_acp_packet(system: str, parts, task) -> str:
+    return f"{system.strip()}\n\n{build_prompt(parts, task)}"
 
 
 def tokens_of(text: str) -> int:
@@ -750,7 +755,583 @@ def cmd_send(argv):
     return 1 if failed else 0
 
 
-COMMANDS = {"send": cmd_send, "show": cmd_show, "runs": cmd_runs, "status": cmd_status, "ledger": cmd_ledger}
+def build_acp_parser():
+    ap = argparse.ArgumentParser(
+        prog="slices acp",
+        description=(
+            "Render self-contained ACP packets (SYSTEM + REPOSITORY CONTEXT + TASK SPECIFICATION) "
+            "or send ONE rendered packet through `acpx --agent 'agy acp --sandbox'` from an empty scratch directory."
+        ),
+    )
+    ap.add_argument("tasks", type=Path, help="tasks file defining REPOS, SYSTEM, and TASKS")
+    ap.add_argument("--only", help="single slice id to send (or comma-separated slice ids for --dry-run)")
+    ap.add_argument("--model", default="gemini-4-neon", help="exact ACP model id (default: gemini-4-neon)")
+    ap.add_argument(
+        "--thought-level",
+        default="medium",
+        choices=["low", "medium", "high", "xhigh"],
+        help="ACP thought_level config option (default: medium)",
+    )
+    ap.add_argument(
+        "--agent",
+        default="agy acp --sandbox",
+        help="ACP agent command passed to acpx --agent (default: 'agy acp --sandbox')",
+    )
+    ap.add_argument("--timeout", type=int, default=360, help="acpx timeout in seconds (default: 360)")
+    ap.add_argument("--output", type=Path, help="default: <tasks file stem>_out beside the tasks file")
+    ap.add_argument("--dry-run", action="store_true", help="render packet files locally and send nothing")
+    ap.add_argument(
+        "--rex",
+        action="store_true",
+        help="launch the single-slice ACP run in a named Rex pane with --keep-open",
+    )
+    ap.add_argument("--rex-label", help="override the Rex pane label (default: slice-<id>)")
+    ap.add_argument(
+        "--replay-events",
+        type=Path,
+        help="offline verification: replay a saved ACP JSONL event stream instead of invoking acpx",
+    )
+    return ap
+
+
+def print_acp_packets_screen(args, repos, tasks, parts, packets, out: Path):
+    print(paint(f"{args.model} · thought_level={args.thought_level}", "bold", "cyan"))
+    print(dim(f"agent: {args.agent} · output: {out}"))
+    print()
+    rows = []
+    total_ctx_bytes = 0
+    total_pkt_bytes = 0
+    total_files = 0
+    for t in tasks:
+        cid = t["custom_id"]
+        ctx_bytes = sum(n for _, _, n in parts[cid])
+        pkt_bytes = len(packets[cid].encode("utf-8"))
+        n_files = len(parts[cid])
+        targets = ", ".join(locate(repos, e)[1] for e in t["output_files"])
+        total_ctx_bytes += ctx_bytes
+        total_pkt_bytes += pkt_bytes
+        total_files += n_files
+        rows.append([
+            cid,
+            plural(n_files, "file"),
+            f"{ctx_bytes / 1024:.1f} KB",
+            f"{pkt_bytes / 1024:.1f} KB",
+            k1(tokens_of(packets[cid])),
+            targets,
+        ])
+    total_row = [
+        plural(len(tasks), "slice"),
+        plural(total_files, "file"),
+        f"{total_ctx_bytes / 1024:.1f} KB",
+        f"{total_pkt_bytes / 1024:.1f} KB",
+        k1(sum(tokens_of(p) for p in packets.values())),
+        "",
+    ]
+    header = ["slice", "excerpts", "ctx KB", "packet KB", "est in", "target"]
+    print("\n".join(render_table(header, rows + [total_row], right={1, 2, 3, 4})))
+
+
+def process_acp_event_stream(
+    lines_iter,
+    *,
+    cid: str,
+    args,
+    wanted: dict,
+    out: Path,
+    raw_events_path: Path,
+    raw_return_path: Path,
+    usage_path: Path,
+    start_time: float,
+):
+    raw_events_path.parent.mkdir(parents=True, exist_ok=True)
+    effective_config = {}
+    legacy_current_model = None
+    tier_name = None
+    quota_pct = "unknown"
+    thought_chunks = 0
+    thought_chars = 0
+    last_thought_headline = ""
+    first_code_at = None
+    in_code_stream = False
+    tool_calls = []
+    raw_message_chunks = []
+    rpc_errors = []
+    stop_reason = None
+    usage = {}
+    thinking_active = threading.Event()
+    thinking_stop = threading.Event()
+    state_lock = threading.Lock()
+
+    def clear_thinking_line():
+        if TTY:
+            sys.stdout.write("\r\x1b[K")
+            sys.stdout.flush()
+
+    def ticker():
+        while not thinking_stop.wait(1.0):
+            if not thinking_active.is_set() or in_code_stream:
+                continue
+            with state_lock:
+                elapsed = time.time() - start_time
+                headline = last_thought_headline
+                chunks = thought_chunks
+            if TTY:
+                badge = paint("THINKING", "bold", "yellow")
+                tail = f" · {headline}" if headline else ""
+                sys.stdout.write(
+                    f"\r  {badge}  {dim(f'{elapsed:5.1f}s · {chunks} chunks')}{dim(tail[:72])}\x1b[K"
+                )
+                sys.stdout.flush()
+
+    ticker_thread = threading.Thread(target=ticker, daemon=True)
+    ticker_thread.start()
+
+    def update_config_from_list(cfg_list):
+        if not isinstance(cfg_list, list):
+            return
+        for item in cfg_list:
+            if isinstance(item, dict) and isinstance(item.get("id"), str):
+                val = item.get("currentValue")
+                if isinstance(val, str):
+                    effective_config[item["id"]] = val
+
+    with raw_events_path.open("w", encoding="utf-8") as events_file:
+        for raw_line in lines_iter:
+            line = raw_line.rstrip("\r\n")
+            if not line.strip():
+                continue
+            events_file.write(line + "\n")
+            events_file.flush()
+            try:
+                msg = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(msg, dict):
+                continue
+
+            if "error" in msg and isinstance(msg["error"], dict):
+                err_msg = msg["error"].get("message") or json.dumps(msg["error"])
+                rpc_errors.append(str(err_msg))
+                clear_thinking_line()
+                print(f"  {paint('FAIL', 'bold', 'red')}      {paint(str(err_msg), 'red')}", flush=True)
+                continue
+
+            res = msg.get("result")
+            if isinstance(res, dict):
+                if "configOptions" in res:
+                    update_config_from_list(res.get("configOptions"))
+                models_obj = res.get("models")
+                if isinstance(models_obj, dict) and isinstance(models_obj.get("currentModelId"), str):
+                    legacy_current_model = models_obj["currentModelId"]
+                meta_agy = (res.get("_meta") or {}).get("antigravity") if isinstance(res.get("_meta"), dict) else None
+                if isinstance(meta_agy, dict):
+                    tier = meta_agy.get("tier")
+                    if isinstance(tier, dict) and isinstance(tier.get("name"), str):
+                        tier_name = tier["name"]
+                    for qk in ("quotaPercentage", "quotaRemainingPct", "remainingPercentage", "quota"):
+                        if qk in meta_agy and meta_agy[qk] is not None:
+                            quota_pct = str(meta_agy[qk])
+                if isinstance(res.get("stopReason"), str):
+                    stop_reason = res["stopReason"]
+                if isinstance(res.get("usage"), dict):
+                    usage.update(res["usage"])
+
+            method = msg.get("method")
+            params = msg.get("params") if isinstance(msg.get("params"), dict) else {}
+
+            if isinstance(method, str) and method.startswith(("fs/", "terminal/")):
+                elapsed = time.time() - start_time
+                tool_calls.append({"name": method, "elapsed": round(elapsed, 2)})
+                clear_thinking_line()
+                print(
+                    f"  {paint('TOOL CALL', 'bold', 'red')} {dim(f'+{elapsed:5.1f}s')}  "
+                    f"{paint(method, 'bold', 'red')}  {paint('[REJECTED: tool use forbidden]', 'red')}",
+                    flush=True,
+                )
+                continue
+
+            if method == "session/update":
+                upd = params.get("update") if isinstance(params.get("update"), dict) else {}
+                kind = upd.get("sessionUpdate")
+                if kind == "config_option_update":
+                    update_config_from_list(upd.get("configOptions"))
+                    eff_m = effective_config.get("model", "?")
+                    eff_t = effective_config.get("thought_level", "?")
+                    clear_thinking_line()
+                    print(
+                        f"  {paint('CONFIG', 'bold', 'blue')}    model={paint(eff_m, 'bold')} · "
+                        f"thought_level={paint(eff_t, 'bold')}"
+                        + (f" · tier={tier_name}" if tier_name else ""),
+                        flush=True,
+                    )
+                elif kind == "usage_update":
+                    for qk in ("quotaPercentage", "quotaRemainingPct", "remainingPercentage"):
+                        if qk in upd and upd[qk] is not None:
+                            quota_pct = str(upd[qk])
+                elif kind in ("tool_call", "tool_call_update"):
+                    elapsed = time.time() - start_time
+                    t_name = (
+                        upd.get("name")
+                        or upd.get("title")
+                        or upd.get("kind")
+                        or upd.get("toolCallId")
+                        or kind
+                    )
+                    t_id = upd.get("toolCallId") or ""
+                    if kind == "tool_call" or not any(tc.get("id") == t_id and t_id for tc in tool_calls):
+                        tool_calls.append({"id": t_id, "name": str(t_name), "kind": kind, "elapsed": round(elapsed, 2)})
+                    clear_thinking_line()
+                    if in_code_stream:
+                        print()
+                        in_code_stream = False
+                    print(
+                        f"  {paint('TOOL CALL', 'bold', 'red')} {dim(f'+{elapsed:5.1f}s')}  "
+                        f"{paint(str(t_name), 'bold', 'red')}  {paint('[REJECTED: tool use forbidden]', 'red')}",
+                        flush=True,
+                    )
+                elif kind == "agent_thought_chunk":
+                    text = ((upd.get("content") or {}).get("text") or "") if isinstance(upd.get("content"), dict) else ""
+                    elapsed = time.time() - start_time
+                    first_line = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
+                    with state_lock:
+                        thought_chunks += 1
+                        thought_chars += len(text)
+                        if first_line:
+                            last_thought_headline = first_line.strip("#*` ")
+                        chunks_now = thought_chunks
+                        headline_now = last_thought_headline
+                    thinking_active.set()
+                    if TTY:
+                        badge = paint("THINKING", "bold", "yellow")
+                        tail = f" · {headline_now}" if headline_now else ""
+                        sys.stdout.write(
+                            f"\r  {badge}  {dim(f'{elapsed:5.1f}s · {chunks_now} chunks')}{dim(tail[:72])}\x1b[K"
+                        )
+                        sys.stdout.flush()
+                    elif chunks_now == 1 or chunks_now % 5 == 0:
+                        tail = f"  {headline_now[:72]}" if headline_now else ""
+                        print(f"  {paint('THINKING', 'bold', 'yellow')}  +{elapsed:5.1f}s  chunk {chunks_now}{tail}", flush=True)
+                elif kind == "agent_message_chunk":
+                    text = ((upd.get("content") or {}).get("text") or "") if isinstance(upd.get("content"), dict) else ""
+                    if not text:
+                        continue
+                    raw_message_chunks.append(text)
+                    if first_code_at is None:
+                        first_code_at = time.time() - start_time
+                        thinking_active.clear()
+                        clear_thinking_line()
+                        print(
+                            f"  {paint('CODE', 'bold', 'cyan')}      "
+                            f"{dim(f'first code at {first_code_at:.1f}s · streaming raw response')}",
+                            flush=True,
+                        )
+                        in_code_stream = True
+                    sys.stdout.write(text)
+                    sys.stdout.flush()
+
+    thinking_stop.set()
+    clear_thinking_line()
+    if in_code_stream:
+        if not raw_message_chunks or not raw_message_chunks[-1].endswith("\n"):
+            print()
+
+    return {
+        "effective_config": effective_config,
+        "legacy_current_model": legacy_current_model,
+        "tier_name": tier_name,
+        "quota_pct": quota_pct,
+        "thought_chunks": thought_chunks,
+        "thought_chars": thought_chars,
+        "first_code_at": first_code_at,
+        "tool_calls": tool_calls,
+        "raw_return": "".join(raw_message_chunks),
+        "rpc_errors": rpc_errors,
+        "stop_reason": stop_reason,
+        "usage": usage,
+    }
+
+
+def cmd_acp(argv):
+    args = build_acp_parser().parse_args(argv)
+    sys.stdout.reconfigure(line_buffering=True)
+    signal.signal(signal.SIGINT, signal.default_int_handler)
+
+    repos, all_tasks, system = load_tasks(args.tasks.resolve())
+    out = (args.output or args.tasks.resolve().with_name(args.tasks.stem + "_out")).resolve()
+    ids = [x.strip() for x in args.only.split(",") if x.strip()] if args.only else None
+    tasks = [t for t in all_tasks if ids is None or t["custom_id"] in ids]
+    if not tasks:
+        fail(f"--only matched nothing; ids: {', '.join(t['custom_id'] for t in all_tasks)}")
+
+    parts = {t["custom_id"]: context_parts(repos, t) for t in tasks}
+    packets = {t["custom_id"]: build_acp_packet(system, parts[t["custom_id"]], t) for t in tasks}
+
+    for cid, packet in packets.items():
+        for subdir in ("_prompts", "_packets"):
+            p = out / subdir / f"{cid}.md"
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(packet, encoding="utf-8")
+
+    if args.dry_run:
+        print_acp_packets_screen(args, repos, tasks, parts, packets, out)
+        print()
+        print(
+            paint("Dry run", "bold", "yellow")
+            + dim(f" · {len(packets)} ACP packets written to {out / '_prompts'} and {out / '_packets'} · nothing sent")
+        )
+        return 0
+
+    if len(tasks) != 1:
+        fail(
+            f"ACP send dispatches exactly ONE slice per invocation (selected {len(tasks)}: "
+            f"{', '.join(t['custom_id'] for t in tasks)}); pass --only <slice_id>"
+        )
+
+    task = tasks[0]
+    cid = task["custom_id"]
+    packet_path = out / "_packets" / f"{cid}.md"
+    wanted = {}
+    for e in task["output_files"]:
+        repo, rel, _, _ = locate(repos, e)
+        wanted[rel] = repo.name
+
+    if args.rex:
+        label = args.rex_label or f"slice-{cid}"
+        inner = [
+            sys.executable,
+            str(Path(__file__).resolve()),
+            "acp",
+            str(args.tasks.resolve()),
+            "--only",
+            cid,
+            "--model",
+            args.model,
+            "--thought-level",
+            args.thought_level,
+            "--agent",
+            args.agent,
+            "--timeout",
+            str(args.timeout),
+        ]
+        if args.output:
+            inner.extend(["--output", str(out)])
+        rex_cmd = ["rex", "run", "--keep-open", "--label", label, "--", *inner]
+        res = subprocess.run(rex_cmd, text=True, capture_output=True)
+        if res.returncode != 0:
+            fail(f"rex run failed (exit {res.returncode}): {res.stderr.strip() or res.stdout.strip()}")
+        print(
+            paint("Launched Rex pane", "bold", "green")
+            + dim(f" · label={label} · {res.stdout.strip()}")
+        )
+        return 0
+
+    ctx_bytes = sum(n for _, _, n in parts[cid])
+    pkt_bytes = len(packets[cid].encode("utf-8"))
+    targets_str = ", ".join(wanted.keys())
+    scratch_root = Path(tempfile.mkdtemp(prefix=f"slices-acp-{cid}-"))
+    work_dir = scratch_root / "work"
+    work_dir.mkdir(parents=True, exist_ok=True)
+
+    print(paint(f"━━ ACP SLICE · {cid} ", "bold", "cyan") + dim("━" * max(1, 56 - len(cid))))
+    print(f"  {dim('target')}   {paint(targets_str, 'bold')}")
+    print(
+        f"  {dim('model')}    {paint(args.model, 'bold', 'cyan')} · "
+        f"thought_level={paint(args.thought_level, 'bold', 'magenta')} · "
+        f"agent={dim(args.agent)}"
+    )
+    print(
+        f"  {dim('packet')}   {k1(tokens_of(packets[cid]))} est tokens "
+        f"({pkt_bytes / 1024:.1f} KB · {plural(len(parts[cid]), 'excerpt')}, {ctx_bytes / 1024:.1f} KB)"
+    )
+    print(f"  {dim('workdir')}  {dim(str(work_dir))} (empty scratch)")
+    print()
+
+    raw_events_path = out / "_returns" / f"{cid}.events.jsonl"
+    raw_return_path = out / "_returns" / f"{cid}.md"
+    usage_path = out / "_returns" / f"{cid}.usage.json"
+    start_time = time.time()
+    exit_code = 0
+
+    try:
+        if args.replay_events:
+            replay_path = args.replay_events.resolve()
+            if not replay_path.is_file():
+                fail(f"--replay-events file not found: {replay_path}")
+            with replay_path.open("r", encoding="utf-8") as f:
+                stream_info = process_acp_event_stream(
+                    f,
+                    cid=cid,
+                    args=args,
+                    wanted=wanted,
+                    out=out,
+                    raw_events_path=raw_events_path,
+                    raw_return_path=raw_return_path,
+                    usage_path=usage_path,
+                    start_time=start_time,
+                )
+        else:
+            acpx_cmd = [
+                "acpx",
+                "--agent",
+                args.agent,
+                "--cwd",
+                str(work_dir),
+                "--model",
+                args.model,
+                "--deny-all",
+                "--no-fs",
+                "--no-terminal",
+                "--prompt-retries",
+                "0",
+                "--timeout",
+                str(args.timeout),
+                "--format",
+                "json",
+                "exec",
+                "--config-option",
+                f"thought_level={args.thought_level}",
+                "--file",
+                str(packet_path),
+            ]
+            proc = subprocess.Popen(
+                acpx_cmd,
+                cwd=str(work_dir),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            )
+            assert proc.stdout is not None
+            stream_info = process_acp_event_stream(
+                proc.stdout,
+                cid=cid,
+                args=args,
+                wanted=wanted,
+                out=out,
+                raw_events_path=raw_events_path,
+                raw_return_path=raw_return_path,
+                usage_path=usage_path,
+                start_time=start_time,
+            )
+            exit_code = proc.wait()
+    finally:
+        shutil.rmtree(scratch_root, ignore_errors=True)
+
+    total_seconds = time.time() - start_time
+    raw_return = stream_info["raw_return"]
+    raw_return_path.parent.mkdir(parents=True, exist_ok=True)
+    raw_return_path.write_text(raw_return, encoding="utf-8")
+
+    eff_cfg = stream_info["effective_config"]
+    eff_model = eff_cfg.get("model")
+    eff_thought = eff_cfg.get("thought_level")
+    tool_calls = stream_info["tool_calls"]
+    first_code_at = stream_info["first_code_at"]
+    stop_reason = stream_info["stop_reason"]
+    rpc_errors = stream_info["rpc_errors"]
+    quota_pct = stream_info["quota_pct"]
+    usage = stream_info["usage"]
+
+    reasons = []
+    if exit_code != 0:
+        reasons.append(f"acpx exited with code {exit_code}")
+    if rpc_errors:
+        reasons.append(f"ACP error: {'; '.join(rpc_errors)}")
+    if len(tool_calls) > 0:
+        names = ", ".join(tc.get("name", "tool") for tc in tool_calls)
+        reasons.append(f"trace contained {len(tool_calls)} forbidden tool call(s): {names}")
+    if eff_model != args.model:
+        reasons.append(f"effective ACP model {eff_model!r} != requested {args.model!r}")
+    if eff_thought != args.thought_level:
+        reasons.append(f"effective ACP thought_level {eff_thought!r} != requested {args.thought_level!r}")
+    if stop_reason and stop_reason != "end_turn":
+        reasons.append(f"unexpected stopReason {stop_reason!r}")
+
+    files = split_files(raw_return)
+    missing = [f for f in wanted if f not in files or not files[f].strip()]
+    if missing:
+        reasons.append(f"missing expected file block(s) {missing}")
+
+    staged_paths = []
+    returned_bytes = 0
+    returned_lines = 0
+    ok = len(reasons) == 0
+
+    for rel, repo_name in wanted.items():
+        target = out / repo_name / rel
+        if ok and rel in files:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            body = files[rel] + "\n"
+            target.write_text(body, encoding="utf-8")
+            staged_paths.append(target)
+            returned_bytes += len(body.encode("utf-8"))
+            returned_lines += body.count("\n")
+        elif not ok and target.exists():
+            target.unlink()
+
+    meta_record = {
+        "slice": cid,
+        "ok": ok,
+        "error": "; ".join(reasons) if reasons else None,
+        "requested": {"model": args.model, "thought_level": args.thought_level, "agent": args.agent},
+        "effective": {
+            "model": eff_model,
+            "thought_level": eff_thought,
+            "legacyCurrentModelId": stream_info["legacy_current_model"],
+            "tier": stream_info["tier_name"],
+        },
+        "timeToFirstCodeSeconds": round(first_code_at, 2) if first_code_at is not None else None,
+        "totalSeconds": round(total_seconds, 2),
+        "toolCallCount": len(tool_calls),
+        "toolCalls": tool_calls,
+        "returnedBytes": returned_bytes,
+        "returnedLines": returned_lines,
+        "quotaPercentage": quota_pct,
+        "stopReason": stop_reason,
+        "usage": usage,
+        "stagedFiles": [str(p) for p in staged_paths],
+        "rawEventsPath": str(raw_events_path),
+        "rawReturnPath": str(raw_return_path),
+    }
+    usage_path.write_text(json.dumps(meta_record, indent=2), encoding="utf-8")
+
+    first_code_str = f"{first_code_at:.1f}s" if first_code_at is not None else "n/a"
+    print(dim("─" * 72))
+    if ok:
+        print(
+            f"  {paint('PASS', 'bold', 'green')}  {paint(cid, 'bold')} · "
+            f"{paint(f'{eff_model} (thought_level={eff_thought})', 'cyan')}"
+        )
+        print(
+            f"  first code: {paint(first_code_str, 'bold')} · "
+            f"total: {paint(f'{total_seconds:.1f}s', 'bold')} · "
+            f"tool calls: {paint('0', 'bold', 'green')} · "
+            f"size: {paint(f'{returned_bytes:,} bytes ({returned_lines} lines)', 'bold')} · "
+            f"quota: {dim(quota_pct)}"
+        )
+        for p in staged_paths:
+            print(f"  staged: {dim(str(p))}")
+        print(f"  events: {dim(str(raw_events_path))}")
+        return 0
+    else:
+        err_summary = "; ".join(reasons)
+        print(
+            f"  {paint('FAIL', 'bold', 'red')}  {paint(cid, 'bold')} · "
+            f"{paint(err_summary, 'red')}"
+        )
+        print(
+            f"  first code: {first_code_str} · "
+            f"total: {total_seconds:.1f}s · "
+            f"tool calls: {paint(str(len(tool_calls)), 'bold', 'red' if tool_calls else 'green')} · "
+            f"size: {returned_bytes:,} bytes · "
+            f"quota: {dim(quota_pct)}"
+        )
+        print(f"  events: {dim(str(raw_events_path))}")
+        print(f"  raw:    {dim(str(raw_return_path))}")
+        return 1
+
+
+COMMANDS = {"acp": cmd_acp, "send": cmd_send, "show": cmd_show, "runs": cmd_runs, "status": cmd_status, "ledger": cmd_ledger}
 
 
 def main(argv=None):
