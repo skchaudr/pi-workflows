@@ -43,7 +43,7 @@ FILE_RE = re.compile(
 
 USAGE = """usage: slices <command> ...
 
-  acp TASKS.py ...    dry-render ACP packets or send ONE slice via acpx -> agy acp (Neon medium)
+  acp TASKS.py ...    dry-render ACP packets or send selected slices concurrently via acpx -> agy acp (Neon medium)
   send TASKS.py ...   dry run or send a batch: cost screen, 30 s countdown, run record
   show TASKS.py ...   the cost screen only; sends nothing, writes nothing
   runs                recorded runs, newest first
@@ -760,11 +760,11 @@ def build_acp_parser():
         prog="slices acp",
         description=(
             "Render self-contained ACP packets (SYSTEM + REPOSITORY CONTEXT + TASK SPECIFICATION) "
-            "or send ONE rendered packet through `acpx --agent 'agy acp --sandbox'` from an empty scratch directory."
+            "or send slices concurrently through `acpx --agent 'agy acp --sandbox'`, each from its own empty scratch directory."
         ),
     )
     ap.add_argument("tasks", type=Path, help="tasks file defining REPOS, SYSTEM, and TASKS")
-    ap.add_argument("--only", help="single slice id to send (or comma-separated slice ids for --dry-run)")
+    ap.add_argument("--only", help="comma-separated slice ids (default: all slices)")
     ap.add_argument("--model", default="gemini-4-neon", help="exact ACP model id (default: gemini-4-neon)")
     ap.add_argument(
         "--thought-level",
@@ -783,7 +783,7 @@ def build_acp_parser():
     ap.add_argument(
         "--rex",
         action="store_true",
-        help="launch the single-slice ACP run in a named Rex pane with --keep-open",
+        help="launch each selected slice in its own named Rex pane with --keep-open",
     )
     ap.add_argument("--rex-label", help="override the Rex pane label (default: slice-<id>)")
     ap.add_argument(
@@ -1063,6 +1063,24 @@ def cmd_acp(argv):
     if not tasks:
         fail(f"--only matched nothing; ids: {', '.join(t['custom_id'] for t in all_tasks)}")
 
+    if len(tasks) > 1 and not args.dry_run:
+        def launch(task):
+            cid = task["custom_id"]
+            cmd = [sys.executable, str(Path(__file__).resolve()), "acp", str(args.tasks.resolve()),
+                   "--only", cid, "--output", str(out), "--model", args.model,
+                   "--thought-level", args.thought_level, "--agent", args.agent, "--timeout", str(args.timeout)]
+            if args.rex:
+                cmd.append("--rex")
+                if args.rex_label:
+                    cmd.extend(["--rex-label", f"{args.rex_label}-{cid}"])
+            if args.replay_events:
+                cmd.extend(["--replay-events", str(args.replay_events.resolve())])
+            return subprocess.run(cmd).returncode
+
+        with ThreadPoolExecutor(max_workers=min(len(tasks), 16)) as pool:
+            results = list(pool.map(launch, tasks))
+        return int(any(results))
+
     parts = {t["custom_id"]: context_parts(repos, t) for t in tasks}
     packets = {t["custom_id"]: build_acp_packet(system, parts[t["custom_id"]], t) for t in tasks}
 
@@ -1080,12 +1098,6 @@ def cmd_acp(argv):
             + dim(f" · {len(packets)} ACP packets written to {out / '_prompts'} and {out / '_packets'} · nothing sent")
         )
         return 0
-
-    if len(tasks) != 1:
-        fail(
-            f"ACP send dispatches exactly ONE slice per invocation (selected {len(tasks)}: "
-            f"{', '.join(t['custom_id'] for t in tasks)}); pass --only <slice_id>"
-        )
 
     task = tasks[0]
     cid = task["custom_id"]

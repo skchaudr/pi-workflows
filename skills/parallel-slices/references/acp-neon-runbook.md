@@ -53,7 +53,7 @@ acpx --agent 'agy acp --sandbox' --cwd "$scratch/work" \
 
 ### Guardrails enforced by `slices acp`
 - **No silent fallback**: Verifies `effective.model == "gemini-4-neon"` and `effective.thought_level == "medium"` from the ACP `configOptions` metadata. Any mismatch fails with exit code `1`.
-- **No automatic resend**: `--prompt-retries 0` and single-slice dispatch per invocation.
+- **Batch selection:** Omit `--only` to launch all slices concurrently, or use `--only id1,id2` for a subset. `--rex` opens a separate pane per slice. Each slice still sends exactly one prompt with `--prompt-retries 0`.
 - **Tool-call detection and rejection**: Because `--deny-all --no-fs --no-terminal` does not prevent `agy` from invoking its own internal reader if prompted, `slices acp` watches the JSON-RPC event stream for any `tool_call`, `tool_call_update`, `fs/*`, or `terminal/*` event. If any tool call occurs, it prints `TOOL CALL ... [REJECTED]`, unstages any output file, and exits `1`.
 - **Clean source separation**: Raw JSON-RPC events go to `_returns/<id>.events.jsonl`, raw unformatted text chunks go to `_returns/<id>.md`, and the extracted Rust file is written directly from the unformatted buffer to the staged path so terminal ANSI codes never touch the `.rs` file.
 
