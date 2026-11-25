@@ -110,6 +110,28 @@
       .card.picked .h {
         background: #5b4a7a;
       }
+      .note {
+        position: absolute;
+        width: 196px;
+        height: 64px;
+        resize: none;
+        font:
+          12px/1.35 ui-monospace,
+          Menlo,
+          monospace;
+        color: var(--text);
+        background: transparent;
+        border: 1px dashed #45475a;
+        padding: 4px 6px;
+      }
+      .note:focus {
+        outline: none;
+        border-color: var(--mauve);
+        background: #181825;
+      }
+      .note::placeholder {
+        color: #585b70;
+      }
       .end {
         position: absolute;
         color: var(--dim);
@@ -285,7 +307,10 @@
       const W = 196,
         H = 64,
         GX = 240,
-        GY = 96;
+        GY = 168,
+        NH = 68; // open comment area under each card
+      const noteKey = (id) => `piw-wb:${graph().title}:${id}`;
+      const noteOf = (id) => localStorage.getItem(noteKey(id)) || "";
 
       function rows(id, n) {
         const [badge, cls] = T[n.t];
@@ -353,9 +378,9 @@
             lx = gx + 4;
             ly = (ay + by) / 2 + H / 2;
           } else {
-            d = `M${ax + W / 2},${ay + H} L${bx + W / 2},${by - 2}`;
+            d = `M${ax + W / 2},${ay + H + NH} L${bx + W / 2},${by - 2}`;
             lx = (ax + bx) / 2 + W / 2 + 4;
-            ly = (ay + H + by) / 2;
+            ly = (ay + H + NH + by) / 2;
           }
           svg += `<path class="edge" d="${d}"/>${label ? `<text class="el" x="${lx}" y="${ly}">${label}</text>` : ""}`;
         }
@@ -363,11 +388,12 @@
         for (const [id, n] of Object.entries(g.nodes)) {
           const [x, y] = pos(id);
           html += `<div class="${cardClass(id, n)}" data-id="${id}" style="left:${x}px;top:${y}px"><div class="h">${id}</div>${rows(id, n)}</div>`;
+          html += `<textarea class="note" data-note="${id}" style="left:${x}px;top:${y + H + 2}px" placeholder="c  comment">${noteOf(id).replace(/</g, "&lt;")}</textarea>`;
         }
         for (const [from, label, col] of g.ends || []) {
           const [, y] = pos(from);
           html += `<div class="end" style="left:${col * GX + W / 2 - 40}px;top:${y + GY + 4}px">■ ${label}</div>`;
-          svg += `<path class="edge" d="M${pos(from)[0] + W / 2},${y + H} L${col * GX + W / 2},${y + GY}"/>`;
+          svg += `<path class="edge" d="M${pos(from)[0] + W / 2},${y + H + NH} L${col * GX + W / 2},${y + GY}"/>`;
         }
         const maxY = Math.max(...Object.values(g.nodes).map((n) => n.y)) + 2;
         $("canvas").style.height = maxY * GY + "px";
@@ -380,6 +406,15 @@
               if (S.mode === "draft") edit();
             }),
         );
+        document.querySelectorAll(".note").forEach((el) => {
+          el.oninput = () => localStorage.setItem(noteKey(el.dataset.note), el.value);
+          el.onfocus = () => {
+            S.sel = el.dataset.note;
+            document
+              .querySelectorAll(".card")
+              .forEach((c) => c.classList.toggle("sel", c.dataset.id === S.sel));
+          };
+        });
         $("keys").innerHTML = keys();
       }
 
@@ -388,6 +423,7 @@
         if (S.mode === "replay")
           return [
             k("←↑↓→", "move"),
+            k("c", "comment"),
             k("space", "pick"),
             k("w", `make reusable${S.picked.size ? " (" + S.picked.size + ")" : ""}`),
             k("2", "draft"),
@@ -396,6 +432,7 @@
           const miss = draftMissing();
           return [
             k("enter", "edit"),
+            k("c", "comment"),
             k("m", "maxSteps"),
             miss.length
               ? `<span class="bad-c">missing: ${miss.join(", ")}</span>`
@@ -406,6 +443,7 @@
         }
         return [
           k("1 2 3", "answer gate"),
+          k("c", "comment"),
           k("+", "raise ↻"),
           k("p", "pause"),
           k("x", "cancel"),
@@ -565,6 +603,15 @@ export default defineWorkflow({
         render();
       };
       document.addEventListener("keydown", (e) => {
+        if (e.target.classList?.contains("note")) {
+          if (e.key === "Escape") e.target.blur();
+          return;
+        }
+        if (e.key === "c" && !$("pop").classList.contains("on")) {
+          e.preventDefault();
+          document.querySelector(`.note[data-note="${S.sel}"]`)?.focus();
+          return;
+        }
         if ($("pop").classList.contains("on")) {
           if (e.key === "Enter") closePop(true);
           if (e.key === "Escape") closePop(false);
@@ -628,6 +675,11 @@ export default defineWorkflow({
               draft: S.draft,
               live: S.live,
               missing: S.draft ? draftMissing() : null,
+              notes: Object.fromEntries(
+                Object.keys(graph().nodes)
+                  .map((id) => [id, noteOf(id)])
+                  .filter(([, v]) => v),
+              ),
             }),
           ),
         generate,
