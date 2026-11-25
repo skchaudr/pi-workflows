@@ -69,7 +69,7 @@
       }
       .card {
         position: absolute;
-        width: 196px;
+        width: 224px;
         border: 1px solid #585b70;
         background: var(--node);
         cursor: pointer;
@@ -85,7 +85,10 @@
       }
       .card .r {
         padding: 1px 8px;
+        min-height: 1.35em;
         white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
       }
       .card.ok {
         border-color: var(--ok);
@@ -112,7 +115,7 @@
       }
       .note {
         position: absolute;
-        width: 196px;
+        width: 224px;
         height: 64px;
         resize: none;
         font:
@@ -131,6 +134,18 @@
       }
       .note::placeholder {
         color: #585b70;
+      }
+      .phase-note {
+        width: 300px;
+      }
+      .phase {
+        position: absolute;
+        color: var(--mauve);
+      }
+      .band {
+        stroke: #313244;
+        stroke-dasharray: 4 4;
+        fill: none;
       }
       .end {
         position: absolute;
@@ -229,14 +244,74 @@
       const BETA8 = {
         title: "beta8-merge",
         meta: "8814563d · cancelled · 8 of 30 steps",
+        phases: [
+          { id: "route", label: "Route", y0: 0, y1: 0 },
+          { id: "resolve", label: "Resolve conflicts", y0: 1, y1: 3 },
+          { id: "gather", label: "Gather", y0: 4, y1: 5 },
+          { id: "verify", label: "Verify and repair", y0: 6, y1: 8 },
+        ],
         nodes: {
-          route_host: { t: "compute", x: 1, y: 0, s: "ok", el: "0s" },
-          resolve_group1_air: { t: "agent", x: 0, y: 1, s: "off", lim: "60m" },
-          resolve_group2_shell: { t: "agent", x: 2, y: 1, s: "ok", el: "16.2m", lim: "60m" },
-          resolve_group3_pager: { t: "agent", x: 2, y: 2, s: "ok", el: "49.3m", lim: "60m" },
-          resolve_group4_acp_session: { t: "agent", x: 2, y: 3, s: "ok", el: "4.9m", lim: "60m" },
-          wait_for_air_gate: { t: "gate", x: 1, y: 4, s: "ok", el: "20.5m" },
-          gather_resolved_files: { t: "shell", x: 1, y: 5, s: "ok", el: "0.7s", lim: "5m" },
+          route_host: {
+            t: "compute",
+            x: 1,
+            y: 0,
+            s: "ok",
+            el: "0s",
+            d: "picks the Air or Mini path",
+          },
+          resolve_group1_air: {
+            t: "agent",
+            x: 0,
+            y: 1,
+            s: "off",
+            lim: "60m",
+            d: "Air: login, config, MCP",
+            note: "not this host",
+          },
+          resolve_group2_shell: {
+            t: "agent",
+            x: 2,
+            y: 1,
+            s: "ok",
+            el: "16.2m",
+            lim: "60m",
+            d: "Mini: shell crates",
+          },
+          resolve_group3_pager: {
+            t: "agent",
+            x: 2,
+            y: 2,
+            s: "ok",
+            el: "49.3m",
+            lim: "60m",
+            d: "Mini: pager conflicts",
+          },
+          resolve_group4_acp_session: {
+            t: "agent",
+            x: 2,
+            y: 3,
+            s: "ok",
+            el: "4.9m",
+            lim: "60m",
+            d: "Mini: ACP session files",
+          },
+          wait_for_air_gate: {
+            t: "gate",
+            x: 1,
+            y: 4,
+            s: "ok",
+            el: "20.5m",
+            d: "you confirm Air is done",
+          },
+          gather_resolved_files: {
+            t: "shell",
+            x: 1,
+            y: 5,
+            s: "ok",
+            el: "0.7s",
+            lim: "5m",
+            d: "copies groups, stages 151",
+          },
           cargo_check: {
             t: "shell",
             x: 1,
@@ -244,6 +319,7 @@
             s: "bad",
             el: "0.1s",
             lim: "90m",
+            d: "compiles the merged tree",
             note: "exit 101 shown as ✓",
           },
           final_review_gate: {
@@ -252,6 +328,7 @@
             y: 7,
             s: "bad",
             el: "36.2m",
+            d: "you accept or repair",
             note: "cancelled by typed text",
           },
           repair_compile: {
@@ -260,9 +337,10 @@
             y: 8,
             s: "off",
             lim: "60m",
+            d: "Sonnet fixes the errors",
             note: "no attempt limit",
           },
-          done: { t: "compute", x: 0, y: 8, s: "off" },
+          done: { t: "compute", x: 0, y: 8, s: "off", d: "finish" },
         },
         edges: [
           ["route_host", "resolve_group1_air"],
@@ -282,11 +360,31 @@
       const draftFrom = () => ({
         title: "check-repair-review",
         maxSteps: null,
+        phases: [
+          { id: "check", label: "Check", y0: 0, y1: 0 },
+          { id: "loop", label: "Bounded repair", y0: 1, y1: 2 },
+          { id: "review", label: "Review", y0: 3, y1: 3 },
+        ],
         nodes: {
-          check: { t: "shell", x: 1, y: 0, lim: null, cmd: "cargo check --workspace --bins" },
-          guard: { t: "compute", x: 1, y: 1, max: null },
-          repair: { t: "agent", x: 2, y: 2, lim: 60, agent: "claude", model: "sonnet" },
-          gate: { t: "gate", x: 1, y: 2 },
+          check: {
+            t: "shell",
+            x: 1,
+            y: 0,
+            lim: null,
+            cmd: "cargo check --workspace --bins",
+            d: "non-zero exit = failed",
+          },
+          guard: { t: "compute", x: 1, y: 1, max: null, d: "N repairs, then the gate" },
+          repair: {
+            t: "agent",
+            x: 2,
+            y: 2,
+            lim: 60,
+            agent: "claude",
+            model: "sonnet",
+            d: "fixes the check's errors",
+          },
+          gate: { t: "gate", x: 1, y: 3, d: "you accept, repair, stop" },
         },
         edges: [
           ["check", "gate", "ok"],
@@ -304,9 +402,11 @@
       const S = { mode: "replay", sel: "cargo_check", picked: new Set(), draft: null, live: null };
       const graph = () => (S.mode === "replay" ? BETA8 : S.draft);
       const $ = (id) => document.getElementById(id);
-      const W = 196,
-        H = 64,
-        GX = 240,
+      const GXV = 260;
+      const W = 224,
+        H = 86,
+        PX = 3 * GXV + 80, // phase comment column, right of the loop gutter
+        GX = GXV,
         GY = 168,
         NH = 68; // open comment area under each card
       const noteKey = (id) => `piw-wb:${graph().title}:${id}`;
@@ -314,26 +414,35 @@
 
       function rows(id, n) {
         const [badge, cls] = T[n.t];
+        const b = `<span class="t-${cls}">${badge}</span>`;
+        const dash = '<span class="bad-c">—</span>';
+        const card = (top, extra = "", extraCls = "dim") =>
+          `<div class="r">${b} ${top}</div><div class="r">${n.d}</div><div class="r ${extraCls}">${extra}</div>`;
         if (S.mode === "replay") {
           const st = { ok: "✓", bad: "✗", off: "·" }[n.s];
-          return `<div class="r"><span class="t-${cls}">${badge}</span> ${st}  ${n.el ? "◷ " + n.el + (n.lim ? " / " + n.lim : "") : ""}</div>
-            <div class="r dim">${n.note || ""}</div>`;
+          const time = n.el
+            ? "◷ " + n.el + (n.lim ? " / " + n.lim : "")
+            : n.lim
+              ? "◷ — / " + n.lim
+              : "";
+          return card(`${st}  ${time}`, n.note || "", n.s === "bad" ? "warn-c" : "dim");
         }
         if (S.mode === "draft") {
-          if (id === "guard")
-            return `<div class="r"><span class="t-${cls}">${badge}</span> ↻ ${n.max ? "≤ " + n.max : '<span class="bad-c">—</span>'}</div><div class="r dim">repairs</div>`;
-          if (id === "gate")
-            return `<div class="r"><span class="t-${cls}">${badge}</span> accept · repair · stop</div><div class="r"></div>`;
-          return `<div class="r"><span class="t-${cls}">${badge}</span> ◷ ${n.lim ? n.lim + "m" : '<span class="bad-c">—</span>'}</div><div class="r dim">${n.cmd || n.agent + "/" + n.model}</div>`;
+          if (id === "guard") return card(`↻ ${n.max ? "≤ " + n.max : dash} repairs`);
+          if (id === "gate") return card("accept · repair · stop");
+          return card(`◷ ${n.lim ? n.lim + "m" : dash}`, n.cmd || n.agent + "/" + n.model);
         }
         const L = S.live;
-        if (id === "guard")
-          return `<div class="r"><span class="t-${cls}">${badge}</span> ↻ ${L.repairs} / ${L.max}</div><div class="r"></div>`;
+        if (id === "guard") return card(`↻ ${L.repairs} / ${L.max} repairs`);
         if (id === "gate")
-          return `<div class="r"><span class="t-${cls}">${badge}</span> ◐ waiting</div><div class="r"><b class="warn-c">1</b> accept <b class="warn-c">2</b> repair <b class="warn-c">3</b> stop</div>`;
+          return card(
+            "◐ waiting",
+            '<b class="warn-c">1</b> accept <b class="warn-c">2</b> repair <b class="warn-c">3</b> stop',
+            "",
+          );
         if (id === "check")
-          return `<div class="r"><span class="t-${cls}">${badge}</span> ✗ ↻ ${L.repairs + 1}  ◷ 0.1s / ${n.lim}m</div><div class="r dim">exit 101</div>`;
-        return `<div class="r"><span class="t-${cls}">${badge}</span> ✓ ↻ ${L.repairs}  ◷ 4m / ${n.lim}m</div><div class="r"></div>`;
+          return card(`✗ ↻ ${L.repairs + 1}  ◷ 0.1s / ${n.lim}m`, "exit 101", "warn-c");
+        return card(`✓ ↻ ${L.repairs}  ◷ 4m / ${n.lim}m`, n.agent + "/" + n.model);
       }
 
       function missing(id, n) {
@@ -395,6 +504,13 @@
           html += `<div class="end" style="left:${col * GX + W / 2 - 40}px;top:${y + GY + 4}px">■ ${label}</div>`;
           svg += `<path class="edge" d="M${pos(from)[0] + W / 2},${y + H + NH} L${col * GX + W / 2},${y + GY}"/>`;
         }
+        for (const p of g.phases || []) {
+          const top = p.y0 * GY - 14;
+          if (p.y0 > 0) svg += `<path class="band" d="M-8,${top - 8} L${PX + 300},${top - 8}"/>`;
+          const h = (p.y1 - p.y0 + 1) * GY - 40;
+          html += `<div class="phase" style="left:${PX}px;top:${top}px">${p.label}</div>`;
+          html += `<textarea class="note phase-note" data-note="phase:${p.id}" style="left:${PX}px;top:${top + 20}px;height:${h}px" placeholder="comment on ${p.label.toLowerCase()}">${noteOf("phase:" + p.id).replace(/</g, "&lt;")}</textarea>`;
+        }
         const maxY = Math.max(...Object.values(g.nodes).map((n) => n.y)) + 2;
         $("canvas").style.height = maxY * GY + "px";
         $("canvas").innerHTML = svg + "</svg>" + html;
@@ -409,6 +525,7 @@
         document.querySelectorAll(".note").forEach((el) => {
           el.oninput = () => localStorage.setItem(noteKey(el.dataset.note), el.value);
           el.onfocus = () => {
+            if (el.dataset.note.startsWith("phase:")) return;
             S.sel = el.dataset.note;
             document
               .querySelectorAll(".card")
@@ -676,7 +793,10 @@ export default defineWorkflow({
               live: S.live,
               missing: S.draft ? draftMissing() : null,
               notes: Object.fromEntries(
-                Object.keys(graph().nodes)
+                [
+                  ...Object.keys(graph().nodes),
+                  ...(graph().phases || []).map((p) => "phase:" + p.id),
+                ]
                   .map((id) => [id, noteOf(id)])
                   .filter(([, v]) => v),
               ),
