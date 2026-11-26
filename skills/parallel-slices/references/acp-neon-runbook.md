@@ -20,6 +20,7 @@ slices acp /Volumes/Mini-SSD/offload/repos/grok-build/task-scripts/acpx-piw-slic
 ```
 
 Each rendered packet contains:
+
 1. Shared worker `SYSTEM` instructions (`"Use only this packet; do not use tools, do not read or write files, and do not run shell commands..."`).
 2. `=== REPOSITORY CONTEXT (N excerpts) ===` (each excerpt `< 32 KB`).
 3. `=== TASK SPECIFICATION ===` ending with `=== FILE: <target> ===` and one fenced `rust` code block.
@@ -52,6 +53,7 @@ acpx --agent 'agy acp --sandbox' --cwd "$scratch/work" \
 ```
 
 ### Guardrails enforced by `slices acp`
+
 - **No silent fallback**: Verifies `effective.model == "gemini-4-neon"` and `effective.thought_level == "medium"` from the ACP `configOptions` metadata. Any mismatch fails with exit code `1`.
 - **Batch selection:** Omit `--only` to launch all slices concurrently, or use `--only id1,id2` for a subset. `--rex` opens a separate pane per slice. Each slice still sends exactly one prompt with `--prompt-retries 0`.
 - **Tool-call detection and rejection**: Because `--deny-all --no-fs --no-terminal` does not prevent `agy` from invoking its own internal reader if prompted, `slices acp` watches the JSON-RPC event stream for any `tool_call`, `tool_call_update`, `fs/*`, or `terminal/*` event. If any tool call occurs, it prints `TOOL CALL ... [REJECTED]`, unstages any output file, and exits `1`.
