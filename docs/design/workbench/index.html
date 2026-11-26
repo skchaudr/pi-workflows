@@ -358,44 +358,32 @@
         ],
       };
       const draftFrom = () => ({
-        title: "check-repair-review",
-        maxSteps: null,
+        title: "beta8-repair",
+        maxSteps: 40,
         phases: [
-          { id: "check", label: "Check", y0: 0, y1: 0 },
-          { id: "loop", label: "Bounded repair", y0: 1, y1: 2 },
-          { id: "review", label: "Review", y0: 3, y1: 3 },
+          { id: "preflight", label: "Preflight", y0: 0, y1: 0 },
+          { id: "check", label: "Check", y0: 1, y1: 1 },
+          { id: "loop", label: "Bounded repair", y0: 2, y1: 3 },
+          { id: "review", label: "Review", y0: 4, y1: 4 },
         ],
         nodes: {
-          check: {
-            t: "shell",
-            x: 1,
-            y: 0,
-            lim: null,
-            cmd: "cargo check --workspace --bins",
-            d: "non-zero exit = failed",
-          },
-          guard: { t: "compute", x: 1, y: 1, max: null, d: "N repairs, then the gate" },
-          repair: {
-            t: "agent",
-            x: 2,
-            y: 2,
-            lim: 60,
-            agent: "claude",
-            model: "sonnet",
-            d: "fixes the check's errors",
-          },
-          gate: { t: "gate", x: 1, y: 3, d: "you accept, repair, stop" },
+          disk: { t: "shell", x: 1, y: 0, lim: 0.5, cmd: "df /Volumes/Mini-SSD", d: "stops if < 15 GB free" },
+          check: { t: "shell", x: 1, y: 1, lim: 90, cmd: "cargo check --workspace --bins", d: "compiles beta8-rest" },
+          guard: { t: "compute", x: 0, y: 2, max: 3, d: "counts repairs" },
+          repair: { t: "agent", x: 2, y: 3, lim: 60, agent: "claude", model: "sonnet", d: "fixes errors, no commit" },
+          gate: { t: "gate", x: 1, y: 4, d: "you decide" },
         },
         edges: [
+          ["disk", "check", ""],
           ["check", "gate", "ok"],
           ["check", "guard", "failed"],
           ["guard", "repair", "retry"],
           ["guard", "gate", "max"],
-          ["repair", "check", "↺"],
+          ["repair", "disk", "↺"],
         ],
         ends: [
           ["gate", "completed", 0],
-          ["gate", "blocked", 2],
+          ["gate", "stopped", 2],
         ],
       });
 
@@ -442,7 +430,7 @@
           );
         if (id === "check")
           return card(`✗ ↻ ${L.repairs + 1}  ◷ 0.1s / ${n.lim}m`, "exit 101", "warn-c");
-        return card(`✓ ↻ ${L.repairs}  ◷ 4m / ${n.lim}m`, n.agent + "/" + n.model);
+        return card(`✓ ↻ ${L.repairs}  ◷ 4m / ${n.lim}m`, n.cmd || n.agent + "/" + n.model);
       }
 
       function missing(id, n) {
@@ -488,8 +476,10 @@
             ly = (ay + by) / 2 + H / 2;
           } else {
             d = `M${ax + W / 2},${ay + H + NH} L${bx + W / 2},${by - 2}`;
-            lx = (ax + bx) / 2 + W / 2 + 4;
-            ly = (ay + H + NH + by) / 2;
+            // label near the source end so labels of crossing edges don't stack at the midpoint
+            const t = ax === bx && by - ay > GY ? 0.25 : 0.5;
+            lx = ax + (bx - ax) * t + W / 2 + 4;
+            ly = ay + H + NH + (by - ay - H - NH) * t;
           }
           svg += `<path class="edge" d="${d}"/>${label ? `<text class="el" x="${lx}" y="${ly}">${label}</text>` : ""}`;
         }
@@ -615,74 +605,8 @@
       }
 
       // --- generated file
-      function generate() {
-        const d = S.draft,
-          n = d.nodes;
-        return `import {
-  agent, allowSettingsPath, choice, compute, defineHumanChoices, defineWorkflow,
-  humanDecision, humanDecisionEdge, idempotentEffect, settingsRoute, shell, workflowSettings,
-} from "@osolmaz/pi-workflows";
-
-const settings = workflowSettings({
-  initial: { maxRepairs: ${n.guard.max} },
-  parse: (v) => v as { maxRepairs: number },
-  paths: [allowSettingsPath("/maxRepairs", { read: ["human"], replace: ["human"] })],
-});
-const gateChoices = defineHumanChoices({
-  accept: choice({ label: "Accept" }),
-  repair: choice({ label: "Repair again" }),
-  stop: choice({ label: "Stop" }),
-});
-
-export default defineWorkflow({
-  name: "${d.title}",
-  settings,
-  maxSteps: ${d.maxSteps},
-  startAt: "check",
-  nodes: {
-    check: shell({
-      effect: idempotentEffect("check"),
-      timeoutMs: ${n.check.lim * 60000},
-      exec: ({ input }) => {
-        const { cwd, checkCommand } = input as { cwd: string; checkCommand: string };
-        return { command: "bash", args: ["-c", checkCommand], cwd };
-      },
-    }),
-    guard: settingsRoute({
-      run: ({ state, settings }) => ({
-        route: state.steps.filter((s) => s.nodeId === "repair").length < (settings as { maxRepairs: number }).maxRepairs ? "retry" : "max",
-      }),
-    }),
-    repair: agent({
-      agent: "${n.repair.agent}",
-      model: "${n.repair.model}",
-      timeoutMs: ${n.repair.lim * 60000},
-      prompt: ({ results }) => \`Fix these errors, then stop:\\n\${results.check.error}\`,
-    }),
-    gate: humanDecision({
-      audience: "operator",
-      choices: gateChoices,
-      request: ({ results }) => ({
-        title: results.check.outcome === "ok" ? "check passed" : "check still failing",
-        subject: { check: results.check },
-        presentation: {
-          schema: "pi-workflows.decision-presentation.v1",
-          summary: "Accept, repair again, or stop.",
-          blocks: [{ kind: "preformatted", text: results.check.error ?? "(no errors)" }],
-        },
-      }),
-    }),
-    completed: compute({ run: () => ({ ok: true }) }),
-    blocked: compute({ run: () => ({ ok: false }) }),
-  },
-  edges: [
-    { from: "check", switch: { on: "$result.outcome", cases: { ok: "gate", failed: "guard", timed_out: "guard" } } },
-    { from: "guard", switch: { on: "$.route", cases: { retry: "repair", max: "gate" } } },
-    { from: "repair", to: "check" },
-    humanDecisionEdge({ from: "gate", choices: gateChoices, cases: { accept: "completed", repair: "repair", stop: "blocked" } }),
-  ],
-});`;
-      }
+      // Shows the committed file (grok-build .pi/workflows/beta8-repair.workflow.ts), not a generated one.
+      const generate = () => document.getElementById("wf-src").textContent.trim();
 
       // --- keyboard
       const move = (dx, dy) => {
@@ -804,7 +728,174 @@ export default defineWorkflow({
           ),
         generate,
       };
-      render();
+      S.draft = draftFrom();
+      setMode("draft");
     </script>
-  </body>
+  <script type="text/plain" id="wf-src">
+import { spawnSync } from "node:child_process";
+import {
+  agent,
+  allowSettingsPath,
+  choice,
+  compute,
+  defineHumanChoices,
+  defineWorkflow,
+  humanDecision,
+  humanDecisionEdge,
+  idempotentEffect,
+  settingsRoute,
+  shell,
+  workflowSettings,
+} from "@osolmaz/pi-workflows";
+
+// Bounded Sonnet repair loop for the gathered beta8 merge tree.
+// check fails -> guard -> repair (at most maxRepairs times) -> check ...; then you decide at the gate.
+const WORKTREE = "/Volumes/Mini-SSD/offload/repos/grok-build/.worktrees/beta8-rest";
+
+type Settings = { maxRepairs: number };
+type RepairOutput = { notes: string };
+
+const settings = workflowSettings({
+  initial: { maxRepairs: 3 },
+  parse: (value) => {
+    const v = value as Partial<Settings> | null;
+    if (!v || !Number.isInteger(v.maxRepairs) || (v.maxRepairs as number) < 0) {
+      throw new Error("maxRepairs must be a non-negative integer");
+    }
+    return { maxRepairs: v.maxRepairs as number };
+  },
+  paths: [allowSettingsPath("/maxRepairs", { read: ["human"], replace: ["human"] })],
+});
+
+const gateChoices = defineHumanChoices({
+  accept: choice({ label: "Accept the tree" }),
+  repair: choice({ label: "One more Sonnet repair" }),
+  stop: choice({ label: "Stop" }),
+});
+
+function git(args: string[]): { status: number | null; stdout: string } {
+  const r = spawnSync("git", args, { cwd: WORKTREE, encoding: "utf8" });
+  return { status: r.status, stdout: r.stdout ?? "" };
+}
+
+export default defineWorkflow({
+  name: "beta8-repair",
+  title: "Repair beta8-rest until cargo check passes",
+  settings,
+  startAt: "disk",
+  maxSteps: 40,
+  nodes: {
+    // Stops the run (no failure route) instead of handing a full disk to Sonnet.
+    disk: shell({
+      effect: idempotentEffect("beta8-repair.disk"),
+      timeoutMs: 30_000,
+      exec: () => ({
+        command: "bash",
+        cwd: WORKTREE,
+        args: [
+          "-c",
+          "FREE_GB=$(df -g /Volumes/Mini-SSD | awk 'NR==2 {print $4}'); " +
+            'if [ "$FREE_GB" -lt 15 ]; then echo "only ${FREE_GB}GB free on Mini-SSD" >&2; exit 2; fi; ' +
+            'echo "${FREE_GB}GB free"',
+        ],
+      }),
+    }),
+
+    // Non-zero exit fails the node, so the card shows the failure; diagnostics go to stderr -> result.error.
+    check: shell({
+      effect: idempotentEffect("beta8-repair.check"),
+      timeoutMs: 5_400_000,
+      exec: () => ({
+        command: "nice",
+        args: ["-n", "15", "cargo", "check", "--workspace", "--bins", "--message-format", "short"],
+        cwd: WORKTREE,
+      }),
+    }),
+
+    guard: settingsRoute({
+      run: ({ state, settings }) => {
+        const used = state.steps.filter((s) => s.nodeId === "repair").length;
+        return { route: used < (settings as Settings).maxRepairs ? "retry" : "max", used };
+      },
+    }),
+
+    repair: agent({
+      agent: "claude",
+      model: "sonnet",
+      timeoutMs: 3_600_000,
+      prompt: ({ results, state }) => {
+        const earlier = state.steps
+          .filter((s) => s.nodeId === "repair" && s.outcome === "ok")
+          .map((s, i) => `${i + 1}. ${(s.output as RepairOutput).notes}`);
+        return [
+          `Work strictly inside ${WORKTREE}. It holds the gathered Grok Build + Dwsy v0.1.14-beta.8 merge (all 151 conflicts resolved and staged).`,
+          "`cargo check --workspace --bins` fails with:",
+          "```",
+          results.check?.error ?? "(no diagnostics captured; run cargo check yourself)",
+          "```",
+          ...(earlier.length > 0 ? ["Earlier repair passes in this run:", ...earlier, ""] : []),
+          "Fix the compile errors. Keep both sides' intent: our fork's multi-host, traces, acpx, piw, Pi/Claude notification routing and isolated grok-home wiring, plus upstream beta.8's additions (mention catalogs, working messages, timeline, thinking_stream_mode, tool-call density, emphasis).",
+          "Do not delete or stub out features to make it compile. Edit only what the errors need. Stage edited files with `git add <file>`. Do NOT commit.",
+          "You may run `cargo check --workspace --bins --message-format short` yourself.",
+          'When done, submit {"notes": "<what you fixed, and anything you could not fix>"}.',
+        ].join("\n");
+      },
+      expectedOutput: '{"notes": "what was fixed"}',
+      validate: (raw: unknown): RepairOutput => {
+        const out = raw as Partial<RepairOutput> | null;
+        if (!out || typeof out.notes !== "string" || out.notes.trim().length === 0) {
+          throw new Error('Submit {"notes": "<what you fixed>"} with non-empty notes.');
+        }
+        const unmerged = git(["diff", "--name-only", "--diff-filter=U"]).stdout.trim();
+        if (unmerged) throw new Error(`Unmerged files remain:\n${unmerged}`);
+        const markers = git(["grep", "-lE", "^(<<<<<<<|>>>>>>>)( |$)", "--", "crates", "Cargo.toml"]);
+        if (markers.status === 0) throw new Error(`Conflict markers in:\n${markers.stdout.trim()}`);
+        return { notes: out.notes.trim() };
+      },
+    }),
+
+    gate: humanDecision({
+      audience: "operator",
+      choices: gateChoices,
+      request: ({ results, state }) => {
+        const passed = results.check?.outcome === "ok";
+        const repairs = state.steps.filter((s) => s.nodeId === "repair");
+        const notes = repairs
+          .filter((s) => s.outcome === "ok")
+          .map((s, i) => `${i + 1}. ${(s.output as RepairOutput).notes}`)
+          .join("\n");
+        return {
+          title: passed
+            ? `cargo check passed after ${repairs.length} repair(s)`
+            : `cargo check still failing after ${repairs.length} repair(s)`,
+          subject: { check: results.check, repair: results.repair },
+          presentation: {
+            schema: "pi-workflows.decision-presentation.v1",
+            summary: passed ? "Accept, or stop." : "Another Sonnet repair, or stop.",
+            blocks: [
+              ...(notes ? [{ kind: "preformatted" as const, text: notes }] : []),
+              { kind: "preformatted" as const, text: results.check?.error ?? "(no errors)" },
+            ],
+          },
+        };
+      },
+    }),
+
+    completed: compute({ run: ({ results }) => ({ ok: true, worktree: WORKTREE, check: results.check?.outcome }) }),
+    stopped: compute({ run: () => ({ ok: false, worktree: WORKTREE }) }),
+  },
+  edges: [
+    { from: "disk", to: "check" },
+    { from: "check", switch: { on: "$result.outcome", cases: { ok: "gate", failed: "guard", timed_out: "guard" } } },
+    { from: "guard", switch: { on: "$.route", cases: { retry: "repair", max: "gate" } } },
+    { from: "repair", switch: { on: "$result.outcome", cases: { ok: "disk", failed: "gate", timed_out: "gate" } } },
+    humanDecisionEdge({
+      from: "gate",
+      choices: gateChoices,
+      cases: { accept: "completed", repair: "repair", stop: "stopped" },
+    }),
+  ],
+});
+</script>
+</body>
 </html>

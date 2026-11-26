@@ -34,5 +34,6 @@ terminal-browser open docs/design/workbench/index.html --split right
 - **Comments** are not saved anywhere outside the browser.
 - **Replay data** is built into the page from run `8814563d`; the page does not read the state
   database.
-- **Template approach:** not decided yet. The page has one hard-coded draft,
-  `check-repair-review`, and no library.
+- **Template approach:** not decided yet. The page has one hard-coded draft, `beta8-repair`
+  (grok-build `.pi/workflows/beta8-repair.workflow.ts`), copied in by hand. `s` shows that
+  committed file, embedded in the page; editing limits in the page does not change it.
