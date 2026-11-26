@@ -11,6 +11,7 @@ import type {
 } from "acpx/runtime";
 import type { StepActivityBody } from "../state/step-activity.js";
 import { CancelledError, errorMessage } from "../workflows/errors.js";
+import { isHarnessControlledAgent, type HarnessControlledAgent } from "../workflows/schema.js";
 import {
   parseWorkflowSubmissionInput,
   WorkflowSubmissionToolParameters,
@@ -56,6 +57,7 @@ export type AcpxRuntimeFactoryInput = {
 export interface AcpxStepRuntime {
   ensureSession(input: AcpRuntimeEnsureInput): Promise<AcpRuntimeHandle>;
   setModel(input: { handle: AcpRuntimeHandle; model: string }): Promise<void>;
+  setMode(input: { handle: AcpRuntimeHandle; mode: string }): Promise<void>;
   startTurn(input: AcpRuntimeTurnInput): AcpRuntimeTurn;
   shutdown(): Promise<void>;
 }
@@ -66,7 +68,7 @@ export type AcpxRuntimeFactory = (
 
 export type AcpxStepExecutorOptions = {
   cwd: string;
-  /** An acpx agent name, for example `grok-build`, `claude` or `pi`. */
+  /** An acpx agent name; steps run only on one of `HARNESS_CONTROLLED_AGENTS`. */
   agent: string;
   /** Applied with `setModel` when present; otherwise the agent's default model runs. */
   model?: string;
@@ -90,15 +92,27 @@ export async function createAcpxRuntime(input: AcpxRuntimeFactoryInput): Promise
     cwd: input.cwd,
     sessionStore: acpx.createFileSessionStore({ stateDir: input.stateDir }),
     agentRegistry: acpx.createAgentRegistry(),
-    // A headless step has nobody to answer a permission prompt.
-    permissionMode: "approve-all",
+    // The step's allowed tools never ask (they are in the session's allowedTools). Anything else
+    // reaches acpx as a permission request, and a headless step has nobody to answer it: deny.
+    permissionMode: "deny-all",
+    nonInteractivePermissions: "deny",
     mcpServers: input.mcpServers,
     processLifecycle: input.processLifecycle,
   });
 }
 
 /**
- * Runs agent steps through acpx, so a step can run on Grok, Claude or any other acpx agent. One
+ * How a step sets each agent's harness instead of inheriting the machine's interactive settings.
+ * `mode` is applied with `setMode` after the session opens: Claude otherwise starts in the user's
+ * `defaultMode` (for example bypassPermissions), which skips permission checks entirely.
+ * `workflowTool` is the name the agent gives the MCP `workflow` tool, added to every allowlist.
+ */
+const HARNESS: Record<HarnessControlledAgent, { mode: string; workflowTool: string }> = {
+  claude: { mode: "default", workflowTool: "mcp__workflow__workflow" },
+};
+
+/**
+ * Runs agent steps through acpx, so a step can run on another agent such as Claude. One
  * oneshot session serves one step attempt. The model hands its result in through an MCP tool named
  * `workflow` with the same input as the Pi `workflow` tool (`submit` and `update`); the tool
  * forwards each call over a private channel to this executor, which validates through
@@ -109,18 +123,35 @@ export async function createAcpxRuntime(input: AcpxRuntimeFactoryInput): Promise
  * session belongs to the step, so the rest of the turn is cancelled and the agent is shut down
  * before the step resolves.
  *
- * Limits: assistant-message completion needs an origin Pi session, and acpx cannot restrict the
- * agent's own tools, so `assistantMessageMode` is "unsupported" and `enforcesToolAllowlist` is not
- * set. The engine fails nodes with assistant completion or `allowedTools` on this executor.
+ * Every step states its harness: the session gets the step's `allowedTools` plus the workflow
+ * tool, the agent is put in an explicit permission mode, and acpx denies every other permission
+ * request. A step without `allowedTools`, or on an agent pi-workflows cannot set up, is refused.
+ * Assistant-message completion needs an origin Pi session, so `assistantMessageMode` is
+ * "unsupported".
  */
 export class AcpxStepExecutor implements AgentStepExecutor {
   readonly assistantMessageMode = "unsupported" as const;
+  readonly enforcesToolAllowlist = true;
 
   constructor(private readonly options: AcpxStepExecutorOptions) {}
 
   async runAgentStep(request: AgentStepRequest, signal: AbortSignal): Promise<AgentStepSubmission> {
     throwIfAborted(signal);
-    return await new AcpxStep(this.options, request, signal).run();
+    const { nodeId, allowedTools } = request.contract;
+    const agent = this.options.agent;
+    if (!isHarnessControlledAgent(agent)) {
+      throw new Error(
+        `Workflow step ${JSON.stringify(nodeId)} sets agent ${JSON.stringify(agent)}, whose permission mode and tools pi-workflows cannot set`,
+      );
+    }
+    if (allowedTools === undefined) {
+      throw new Error(
+        `Workflow step ${JSON.stringify(nodeId)} sets agent ${JSON.stringify(agent)} without allowedTools`,
+      );
+    }
+    const harness = HARNESS[agent];
+    const tools = [...allowedTools, harness.workflowTool];
+    return await new AcpxStep(this.options, request, signal, { mode: harness.mode, tools }).run();
   }
 }
 
@@ -141,6 +172,7 @@ class AcpxStep {
     private readonly options: AcpxStepExecutorOptions,
     private readonly request: AgentStepRequest,
     private readonly signal: AbortSignal,
+    private readonly harness: { mode: string; tools: string[] },
   ) {
     this.graceMs = options.abortGraceMs ?? DEFAULT_ABORT_GRACE_MS;
   }
@@ -173,7 +205,9 @@ class AcpxStep {
       agent: this.options.agent,
       mode: "oneshot",
       cwd: this.options.cwd,
+      sessionOptions: { allowedTools: this.harness.tools },
     });
+    await runtime.setMode({ handle, mode: this.harness.mode });
     if (this.options.model !== undefined) {
       await runtime.setModel({ handle, model: this.options.model });
     }

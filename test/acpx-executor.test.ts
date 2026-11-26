@@ -84,6 +84,8 @@ class McpClient {
 class FakeRuntime implements AcpxStepRuntime {
   readonly texts: string[] = [];
   readonly models: string[] = [];
+  /** setMode and setModel calls in order, to show the mode is set before the model. */
+  readonly controls: string[] = [];
   readonly sessions: AcpRuntimeEnsureInput[] = [];
   shutdowns = 0;
   cancels = 0;
@@ -111,6 +113,11 @@ class FakeRuntime implements AcpxStepRuntime {
   async setModel(input: { model: string }): Promise<void> {
     if (this.options.failModel !== undefined) throw new Error(this.options.failModel);
     this.models.push(input.model);
+    this.controls.push(`model:${input.model}`);
+  }
+
+  async setMode(input: { mode: string }): Promise<void> {
+    this.controls.push(`mode:${input.mode}`);
   }
 
   startTurn(input: AcpRuntimeTurnInput): AcpRuntimeTurn {
@@ -180,6 +187,7 @@ function makeRequest(overrides: Partial<AgentStepRequest> = {}): AgentStepReques
       attemptId: "att-1",
       completion: "submit",
       expectedOutput: "an object with an answer",
+      allowedTools: ["Read", "Grep"],
     },
     prompt: "Work out 2+2.",
     accept: async (output) => ({ ok: true as const, value: output }),
@@ -200,7 +208,7 @@ async function setup(
   });
   const executor = new AcpxStepExecutor({
     cwd: dir,
-    agent: "fake-agent",
+    agent: "claude",
     stateDir: path.join(dir, "state"),
     runtimeFactory: factory,
     ...options,
@@ -209,10 +217,51 @@ async function setup(
 }
 
 describe("AcpxStepExecutor", () => {
-  it("does not claim assistant completion or tool allowlists", async () => {
+  it("enforces tool allowlists and does not claim assistant completion", async () => {
     const { executor } = await setup([]);
     expect(executor.assistantMessageMode).toBe("unsupported");
-    expect((executor as AgentStepExecutor).enforcesToolAllowlist).toBeUndefined();
+    expect((executor as AgentStepExecutor).enforcesToolAllowlist).toBe(true);
+  });
+
+  it("sets the step's harness: allowed tools plus the workflow tool, then default mode before the model", async () => {
+    const { executor, runtime } = await setup(
+      [async (call) => void (await call(submit({ answer: 4 })))],
+      { model: "sonnet" },
+    );
+    await executor.runAgentStep(makeRequest(), new AbortController().signal);
+    expect(runtime().sessions[0]?.sessionOptions).toEqual({
+      allowedTools: ["Read", "Grep", "mcp__workflow__workflow"],
+    });
+    expect(runtime().controls).toEqual(["mode:default", "model:sonnet"]);
+  });
+
+  it("gives a step with an empty allowlist only the workflow tool", async () => {
+    const { executor, runtime } = await setup([
+      async (call) => void (await call(submit({ answer: 4 }))),
+    ]);
+    const request = makeRequest();
+    request.contract.allowedTools = [];
+    await executor.runAgentStep(request, new AbortController().signal);
+    expect(runtime().sessions[0]?.sessionOptions).toEqual({
+      allowedTools: ["mcp__workflow__workflow"],
+    });
+  });
+
+  it("refuses a step without allowedTools or on an agent whose harness it cannot set, starting nothing", async () => {
+    const { executor, factory } = await setup([]);
+    const request = makeRequest();
+    delete request.contract.allowedTools;
+    await expect(executor.runAgentStep(request, new AbortController().signal)).rejects.toThrow(
+      /"implement" sets agent "claude" without allowedTools/,
+    );
+    const grok = await setup([], { agent: "grok-build" });
+    await expect(
+      grok.executor.runAgentStep(makeRequest(), new AbortController().signal),
+    ).rejects.toThrow(
+      /agent "grok-build", whose permission mode and tools pi-workflows cannot set/,
+    );
+    expect(factory).not.toHaveBeenCalled();
+    expect(grok.factory).not.toHaveBeenCalled();
   });
 
   it("resolves with the accepted value and tears the agent down", async () => {
@@ -233,7 +282,7 @@ describe("AcpxStepExecutor", () => {
     expect(runtime().texts[0]).toContain("workflow__workflow");
     expect(runtime().sessions).toEqual([
       expect.objectContaining({
-        agent: "fake-agent",
+        agent: "claude",
         mode: "oneshot",
         sessionKey: expect.stringContaining("att-1"),
       }),

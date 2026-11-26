@@ -1,11 +1,13 @@
 # Run a workflow from Grok Build
 
 This guide starts a pi-workflows run from inside Grok Build, answers its gate there, and inspects
-the finished run. Steps can run on Grok, Claude, or Pi in one workflow. Grok Build here means the
+the finished run. Steps can run on Claude or Pi in one workflow. Grok Build here means the
 fork that ships the `grok-fork` pager and the `grok-acpx-acp` driver.
 
 The commands and keys on this page were run on 2026-11-22 against pi-workflows `2fb32f5` and the
-fork at `20aedddf`. The fork is now at `a4650ff1`, which changed wording only.
+fork at `20aedddf`. The fork is now at `a4650ff1`, which changed wording only. Since then the
+example's first step moved from Grok to Claude Haiku, because pi-workflows now refuses agents
+whose harness it cannot set ([Workflows](WORKFLOWS.md#running-a-step-on-another-agent-agent-and-model) explains why).
 
 ## Before you start
 
@@ -18,7 +20,7 @@ You need three things on the machine:
   holds the checkout's path, not `npm:@osolmaz/pi-workflows`. The published 0.17.7 package does not
   run steps that name an agent.
 - **The agents the workflow names.** A step with `agent: "claude"` needs Claude Code signed in. A
-  step with `agent: "grok-build"` needs Grok signed in. A step without `agent` runs on Pi.
+  step without `agent` runs on Pi.
 
 `/flow` starts the workflow server when none is running, from the package Pi's settings name. Pi
 does the same. To check, stop or start it by hand, run these from this checkout:
@@ -40,8 +42,9 @@ server started earlier from the published package keeps running that package unt
 
 ## Write a workflow
 
-Save this as `mixed.workflow.ts` in any folder. It runs one step on Grok, asks you a question, then
-runs one step on Claude and one on Pi.
+Save this as `mixed.workflow.ts` in any folder. It runs one step on Claude Haiku, asks you a
+question, then runs one step on Claude Sonnet and one on Pi. The Claude steps may use no tool but
+`workflow` (`allowedTools: []`).
 
 ```ts
 import {
@@ -71,33 +74,33 @@ const choices = defineHumanChoices({
 
 export default defineWorkflow({
   name: "mixed",
-  startAt: "grok",
+  startAt: "haiku",
   nodes: {
-    grok: agent({ ...step("grok"), agent: "grok-build" }),
+    haiku: agent({ ...step("haiku"), agent: "claude", model: "haiku", allowedTools: [] }),
     gate: humanDecision({
       audience: "operator",
       choices,
       request: ({ outputs }) => ({
-        title: "Grok answered. Continue to Claude and Pi?",
-        subject: { grok: outputs.grok },
+        title: "Haiku answered. Continue to Sonnet and Pi?",
+        subject: { haiku: outputs.haiku },
         presentation: {
           schema: "pi-workflows.decision-presentation.v1",
-          summary: "Choose continue to run the Claude and Pi steps, or stop.",
+          summary: "Choose continue to run the Sonnet and Pi steps, or stop.",
           blocks: [],
         },
       }),
     }),
-    claude: agent({ ...step("claude"), agent: "claude" }),
+    sonnet: agent({ ...step("sonnet"), agent: "claude", model: "sonnet", allowedTools: [] }),
     pi: agent(step("pi")),
     done: compute({
-      run: ({ outputs }) => ({ grok: outputs.grok, claude: outputs.claude, pi: outputs.pi }),
+      run: ({ outputs }) => ({ haiku: outputs.haiku, sonnet: outputs.sonnet, pi: outputs.pi }),
     }),
     stopped: compute({ run: () => ({ stopped: true }) }),
   },
   edges: [
-    { from: "grok", to: "gate" },
-    humanDecisionEdge({ from: "gate", choices, cases: { continue: "claude", stop: "stopped" } }),
-    { from: "claude", to: "pi" },
+    { from: "haiku", to: "gate" },
+    humanDecisionEdge({ from: "gate", choices, cases: { continue: "sonnet", stop: "stopped" } }),
+    { from: "sonnet", to: "pi" },
     { from: "pi", to: "done" },
   ],
 });

@@ -135,12 +135,16 @@ export type AgentExpectedOutput = string | AssistantMessageOutput;
 
 type AgentNodeBase = WorkflowNodeCommon & {
   nodeType: "agent";
-  /** Optional exact tool allowlist. Matching workflow submit/update calls remain allowed. */
+  /**
+   * Exact tool allowlist. Matching workflow submit/update calls remain allowed. Optional on Pi
+   * steps; required with `agent`, where it names that agent's own tools (for Claude: `Read`,
+   * `Edit`, `Bash`, ...), so the step never runs on the machine's interactive harness settings.
+   */
   allowedTools?: string[];
   /**
-   * Name of the acpx agent that runs this step, for example `grok-build` or `claude`. Omit it to
-   * run on the run's own Pi (interactive session or headless child). Not `pi`: acpx's Pi agent
-   * cannot receive the workflow tool. Cannot be combined with `allowedTools` or assistantMessage().
+   * Name of the acpx agent that runs this step: one of `HARNESS_CONTROLLED_AGENTS`. Omit it to run
+   * on the run's own Pi (interactive session or headless child). Needs `allowedTools`; cannot be
+   * combined with assistantMessage().
    */
   agent?: string;
   /** Model to select on `agent` before the step runs. Needs `agent`. */

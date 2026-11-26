@@ -1313,7 +1313,12 @@ export class WorkflowEngine {
       }
     }
 
-    if (node.allowedTools !== undefined && this.executor.enforcesToolAllowlist !== true) {
+    // An acpx step's allowlist is enforced by the acpx executor, which refuses one it cannot set.
+    if (
+      node.agent === undefined &&
+      node.allowedTools !== undefined &&
+      this.executor.enforcesToolAllowlist !== true
+    ) {
       throw new Error(
         "This executor cannot enforce the agent tool allowlist; use an origin Pi session",
       );

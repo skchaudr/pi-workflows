@@ -54,9 +54,24 @@ function oneStep(step: unknown) {
 }
 
 describe("agent and model on a step: validation", () => {
-  it("accepts an acpx agent with and without a model", () => {
-    expect(() => oneStep(agent({ prompt, agent: "grok-build" }))()).not.toThrow();
-    expect(() => oneStep(agent({ prompt, agent: "claude", model: "sonnet" }))()).not.toThrow();
+  it("accepts claude with allowedTools, with and without a model", () => {
+    expect(() => oneStep(agent({ prompt, agent: "claude", allowedTools: [] }))()).not.toThrow();
+    expect(() =>
+      oneStep(agent({ prompt, agent: "claude", model: "sonnet", allowedTools: ["Read"] }))(),
+    ).not.toThrow();
+  });
+
+  it("rejects an agent whose harness pi-workflows cannot set, naming the step", () => {
+    const message = nodeError(oneStep(agent({ prompt, agent: "grok-build", allowedTools: [] })));
+    expect(message).toContain("node review");
+    expect(message).toContain('agent "grok-build"');
+    expect(message).toContain("would run on the machine's interactive settings");
+  });
+
+  it("rejects an agent step without allowedTools, naming the step", () => {
+    const message = nodeError(oneStep(agent({ prompt, agent: "claude" })));
+    expect(message).toContain("node review");
+    expect(message).toContain('agent "claude" without allowedTools');
   });
 
   it("rejects agent pi and says to omit agent for Pi steps", () => {
@@ -87,15 +102,11 @@ describe("agent and model on a step: validation", () => {
     );
   });
 
-  it("rejects agent with allowedTools, naming the step and the feature", () => {
-    const message = nodeError(oneStep(agent({ prompt, agent: "claude", allowedTools: ["read"] })));
-    expect(message).toContain("node review");
-    expect(message).toContain("does not support allowedTools");
-  });
-
   it("rejects agent with assistantMessage(), naming the step and the feature", () => {
     const message = nodeError(
-      oneStep(agent({ prompt, agent: "claude", expectedOutput: assistantMessage() })),
+      oneStep(
+        agent({ prompt, agent: "claude", allowedTools: [], expectedOutput: assistantMessage() }),
+      ),
     );
     expect(message).toContain("node review");
     expect(message).toContain("does not support assistantMessage() completion");
@@ -123,12 +134,12 @@ describe("agent and model on a step: reach the engine request, child graphs and 
       startAt: "plain",
       nodes: {
         plain: agent({ prompt }),
-        grok: agent({ prompt, agent: "grok-build" }),
-        claude: agent({ prompt, agent: "claude", model: "sonnet" }),
+        reader: agent({ prompt, agent: "claude", allowedTools: ["Read"] }),
+        claude: agent({ prompt, agent: "claude", model: "sonnet", allowedTools: [] }),
       },
       edges: [
-        { from: "plain", to: "grok" },
-        { from: "grok", to: "claude" },
+        { from: "plain", to: "reader" },
+        { from: "reader", to: "claude" },
       ],
     });
     const { state } = await new WorkflowEngine({
@@ -136,19 +147,23 @@ describe("agent and model on a step: reach the engine request, child graphs and 
       databasePath: await makeStateDatabasePath("routing-request"),
     }).run(workflow, {});
     expect(state.status).toBe("completed");
-    const [plain, grok, claude] = recorder.requests;
+    const [plain, reader, claude] = recorder.requests;
     expect(plain).not.toHaveProperty("agent");
     expect(plain).not.toHaveProperty("model");
-    expect(grok).toMatchObject({ agent: "grok-build" });
-    expect(grok).not.toHaveProperty("model");
-    expect(claude).toMatchObject({ agent: "claude", model: "sonnet" });
+    expect(reader).toMatchObject({ agent: "claude", contract: { allowedTools: ["Read"] } });
+    expect(reader).not.toHaveProperty("model");
+    expect(claude).toMatchObject({
+      agent: "claude",
+      model: "sonnet",
+      contract: { allowedTools: [] },
+    });
   });
 
   it("keeps agent and model in included workflows and in the definition snapshot", () => {
     const child = defineWorkflow({
       name: "child",
       startAt: "inspect",
-      nodes: { inspect: agent({ prompt, agent: "claude", model: "sonnet" }) },
+      nodes: { inspect: agent({ prompt, agent: "claude", model: "sonnet", allowedTools: [] }) },
       edges: [],
       exits: { done: { from: "inspect", validate: (value: unknown) => value } },
     });
@@ -249,14 +264,14 @@ describe("AgentRoutingExecutor", () => {
     const acpx = new Map<string, FakeExecutor>();
     const executor = routing(runExecutor, acpx);
     const signal = new AbortController().signal;
-    const grok = await executor.runAgentStep(request({ agent: "grok-build" }), signal);
-    const claude = await executor.runAgentStep(
+    const plain = await executor.runAgentStep(request({ agent: "claude" }), signal);
+    const sonnet = await executor.runAgentStep(
       request({ agent: "claude", model: "sonnet" }),
       signal,
     );
-    expect(grok.output).toEqual({ ranOn: "acpx:grok-build", node: "step" });
-    expect(claude.output).toEqual({ ranOn: "acpx:claude", node: "step" });
-    expect([...acpx.keys()]).toEqual(["grok-build:-", "claude:sonnet"]);
+    expect(plain.output).toEqual({ ranOn: "acpx:claude", node: "step" });
+    expect(sonnet.output).toEqual({ ranOn: "acpx:claude", node: "step" });
+    expect([...acpx.keys()]).toEqual(["claude:-", "claude:sonnet"]);
     expect(runExecutor.requests).toEqual([]);
   });
 
@@ -279,16 +294,13 @@ describe("AgentRoutingExecutor", () => {
     }
   });
 
-  it("refuses an agent request that needs assistant completion or an allowlist", async () => {
+  it("refuses an agent request that needs assistant completion", async () => {
     const acpx = new Map<string, FakeExecutor>();
     const router = routing(new FakeExecutor("run", answerWith("run")), acpx);
     const signal = new AbortController().signal;
     await expect(
       router.runAgentStep(request({ agent: "claude" }, { completion: "assistant" }), signal),
     ).rejects.toThrow(/"step" sets agent "claude", which does not support assistantMessage\(\)/);
-    await expect(
-      router.runAgentStep(request({ agent: "claude" }, { allowedTools: ["read"] }), signal),
-    ).rejects.toThrow(/does not support allowedTools/);
     expect(acpx.size).toBe(0);
   });
 
@@ -309,7 +321,7 @@ const mixedWorkflow = defineWorkflow({
   startAt: "plain1",
   nodes: {
     plain1: agent({ prompt }),
-    remote: agent({ prompt, agent: "claude", model: "sonnet" }),
+    remote: agent({ prompt, agent: "claude", model: "sonnet", allowedTools: [] }),
     plain2: agent({ prompt }),
     done: compute({
       run: ({ outputs }) => ({
@@ -430,6 +442,8 @@ class HangingRuntime implements AcpxStepRuntime {
 
   async setModel(): Promise<void> {}
 
+  async setMode(): Promise<void> {}
+
   startTurn(input: AcpRuntimeTurnInput): AcpRuntimeTurn {
     let cancel: () => void = () => undefined;
     const result = new Promise<AcpRuntimeTurnResult>((resolve) => {
@@ -484,7 +498,7 @@ describe("cancelling a run during a step on acpx", () => {
     const workflow = defineWorkflow({
       name: "cancel-acpx",
       startAt: "remote",
-      nodes: { remote: agent({ prompt, agent: "claude" }) },
+      nodes: { remote: agent({ prompt, agent: "claude", allowedTools: [] }) },
       edges: [],
     });
     const running = engine.run(workflow, {});
@@ -512,7 +526,10 @@ describe("cancelling a run during a step on acpx", () => {
     const stateDir = await makeTempDir("routing-close-state");
     const router = realAcpxRouting(runtimes, stateDir, neverCalled);
     const step = router
-      .runAgentStep(request({ agent: "grok-build" }), new AbortController().signal)
+      .runAgentStep(
+        request({ agent: "claude" }, { allowedTools: [] }),
+        new AbortController().signal,
+      )
       .then(
         () => undefined,
         (error: unknown) => error,
@@ -529,7 +546,10 @@ describe("cancelling a run during a step on acpx", () => {
 
     // After close(), a new acpx step does not start anything.
     await expect(
-      router.runAgentStep(request({ agent: "grok-build" }), new AbortController().signal),
+      router.runAgentStep(
+        request({ agent: "claude" }, { allowedTools: [] }),
+        new AbortController().signal,
+      ),
     ).rejects.toBeInstanceOf(CancelledError);
     expect(runtimes).toHaveLength(1);
   });

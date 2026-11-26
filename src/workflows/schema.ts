@@ -21,6 +21,18 @@ const NODE_ID_PATTERN = /^[A-Za-z_][A-Za-z0-9_-]*$/;
  */
 export const NODE_ID_MAX_BYTES = 4 * 1024;
 
+/**
+ * acpx agents whose harness pi-workflows sets for every step: permission mode and tool allowlist.
+ * An agent step on any other agent would run on that machine's interactive settings, so it is
+ * refused.
+ */
+export const HARNESS_CONTROLLED_AGENTS = ["claude"] as const;
+export type HarnessControlledAgent = (typeof HARNESS_CONTROLLED_AGENTS)[number];
+
+export function isHarnessControlledAgent(agent: string): agent is HarnessControlledAgent {
+  return (HARNESS_CONTROLLED_AGENTS as readonly string[]).includes(agent);
+}
+
 function fail(message: string): never {
   throw new Error(`Invalid workflow definition: ${message}`);
 }
@@ -72,9 +84,14 @@ function assertValidAgentRouting(node: AgentNodeDefinition, nodeId: string): voi
   if (node.model !== undefined && (typeof node.model !== "string" || node.model.trim() === "")) {
     fail(`node ${nodeId} model must be a nonempty model id`);
   }
-  if (node.allowedTools !== undefined) {
+  if (!isHarnessControlledAgent(node.agent)) {
     fail(
-      `node ${nodeId} sets agent ${JSON.stringify(node.agent)}, which does not support allowedTools (acpx cannot restrict an agent's tools): remove allowedTools or agent`,
+      `node ${nodeId} sets agent ${JSON.stringify(node.agent)}, whose permission mode and tools pi-workflows cannot set, so it would run on the machine's interactive settings: use one of ${JSON.stringify(HARNESS_CONTROLLED_AGENTS)} or omit agent`,
+    );
+  }
+  if (node.allowedTools === undefined) {
+    fail(
+      `node ${nodeId} sets agent ${JSON.stringify(node.agent)} without allowedTools: list the agent tools the step may use, for example ["Read", "Grep", "Glob"], or [] for only the workflow tool`,
     );
   }
   if (typeof node.expectedOutput === "object") {

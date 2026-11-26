@@ -209,7 +209,7 @@ The exact pending request determines response controls in both running and waiti
 agent steps retain `submit` and `update`, checkpoints retain `answer`, and protected decisions
 retain only their human response path. Ordinary chat is not workflow activity.
 
-`allowedTools` optionally restricts a step to exact tool names, for example `allowedTools: ["read", "grep", "find", "ls"]`. Omit it for the normal tool set; use `[]` to permit only matching workflow `submit` and `update` calls. Do not include `workflow` in the list. Restrictions remain in composed child graphs, definition snapshots, and the durable step contract. Changing them requires a new run under the fixed-definition rule.
+`allowedTools` optionally restricts a Pi step to exact tool names, for example `allowedTools: ["read", "grep", "find", "ls"]`; a step with `agent` must set it, with that agent's tool names (see below). Omit it on a Pi step for the normal tool set; use `[]` to permit only matching workflow `submit` and `update` calls. Do not include `workflow` in the list. Restrictions remain in composed child graphs, definition snapshots, and the durable step contract. Changing them requires a new run under the fixed-definition rule.
 
 The origin Pi extension blocks other calls through public `tool_call` before execution, including while delivery acknowledgment is pending. It applies the restriction only to the workflow-owned running turn, not later ordinary chat. This is an exact tool allowlist, not a filesystem sandbox: authors must trust the implementations of the tools they allow. No shell is implicitly read-only.
 
@@ -286,6 +286,7 @@ agent({
   expectedOutput: `{ "verdict": "clean" | "issues_found" }`,
   agent: "claude", // an acpx agent name
   model: "sonnet", // optional; selected on that agent before the step runs
+  allowedTools: ["Read", "Grep", "Glob"], // required: the agent's own tool names
 });
 ```
 
@@ -299,18 +300,25 @@ agent({
   `validate`, comes back to the agent as the tool result so it can correct itself. If a turn ends
   without a submission, the executor sends the same bounded reminders (two) and then fails the step
   with an error naming the step and the agent. Without `model`, the agent's own default model runs.
-- **Agent names that work:** `grok-build` (Grok, `grok agent stdio`) and `claude` (Claude through
-  `claude-agent-acp`). Both are proven with live runs, and the agent's own CLI must be installed
-  and signed in on the machine that runs the workflow. `model` must be a model the agent offers;
-  an agent that does not offer it fails the step with its own error.
+- **Agent names that work:** `claude` (Claude through `claude-agent-acp`), the only agent whose
+  harness pi-workflows sets for each step (see Harness below). Its CLI must be installed and signed
+  in on the machine that runs the workflow. `model` must be a model the agent offers; an agent
+  that does not offer it fails the step with its own error.
+- **Harness:** a step never runs on the machine's interactive agent settings. `allowedTools` is
+  required and names the agent's own tools (Claude: `Read`, `Grep`, `Glob`, `Edit`, `Write`,
+  `Bash`, ...); `[]` permits only the `workflow` tool, which is always added. The executor opens
+  the session with that allowlist, puts Claude in its `default` permission mode (otherwise Claude
+  starts in the user's `defaultMode`, for example `bypassPermissions`, which skips every
+  permission check), and has acpx deny every permission request, so any tool outside the list
+  fails with "User refused permission". Allow rules in the step's project `.claude/settings.json`
+  or `.claude/settings.local.json` still apply and can widen the list; keep them out of
+  repositories that run restricted steps.
 - **Rejected when the workflow loads:** `agent: "pi"`, because acpx's Pi agent cannot receive the
-  `workflow` tool; omit `agent` for Pi steps. `model` without `agent`. An empty `agent` or `model`.
-  `agent` together with `allowedTools` (acpx cannot restrict an agent's own tools, so the
-  restriction would be dropped silently) or with `assistantMessage()` (the response must come from
-  an origin Pi session). Each error names the step and the feature.
-- **Permissions:** nobody can answer a permission prompt in a headless step, so the agent runs
-  with every permission approved. Give an `agent` step only work you would let that agent do
-  unattended.
+  `workflow` tool; omit `agent` for Pi steps. Any other agent whose harness pi-workflows cannot
+  set, such as `grok-build`, because it would run on that machine's interactive settings. `agent`
+  without `allowedTools`. `model` without `agent`. An empty `agent` or `model`. `agent` together
+  with `assistantMessage()` (the response must come from an origin Pi session). Each error names
+  the step and the feature.
 - **Cancel, pause and time limits:** cancelling or stopping a run cancels the running step's turn,
   shuts its agent down and ends any agent process still alive, then the runner exits. The server also
   records each agent process, so it ends one if the runner dies first. The node's `timeoutMs`

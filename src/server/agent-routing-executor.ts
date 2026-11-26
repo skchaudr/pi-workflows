@@ -27,8 +27,8 @@ export function acpxExecutorFactory(
  * Sends a step that names an `agent` to an acpx executor and every other step to the run's own
  * executor, untouched. The capability flags are the run's own executor's: they describe the steps
  * without an agent, which are the only steps that reach it. A step with an agent never has
- * assistant-message completion or `allowedTools`; workflow validation refuses that combination and
- * this executor refuses it again for a definition built some other way.
+ * assistant-message completion; workflow validation refuses it and this executor refuses it again
+ * for a definition built some other way. The acpx executor enforces an agent step's allowlist.
  *
  * `close()` cancels every running acpx step, which cancels its turn and leaves no agent process,
  * so a runner that is told to stop can end a run in the middle of an acpx step.
@@ -76,16 +76,8 @@ export class AgentRoutingExecutor implements AgentStepExecutor {
 }
 
 function refuseUnsupported(request: AgentStepRequest, agent: string): void {
-  const { nodeId, completion, allowedTools } = request.contract;
-  const unsupported =
-    completion === "assistant"
-      ? "assistantMessage() completion"
-      : allowedTools === undefined
-        ? undefined
-        : "allowedTools";
-  if (unsupported !== undefined) {
-    throw new Error(
-      `Workflow step ${JSON.stringify(nodeId)} sets agent ${JSON.stringify(agent)}, which does not support ${unsupported}`,
-    );
-  }
+  if (request.contract.completion !== "assistant") return;
+  throw new Error(
+    `Workflow step ${JSON.stringify(request.contract.nodeId)} sets agent ${JSON.stringify(agent)}, which does not support assistantMessage() completion`,
+  );
 }
