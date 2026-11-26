@@ -89,6 +89,21 @@ pub const BINDINGS: &[Binding] = &[
         keys: "1 / 2 / 3 / 4",
         action: "Select Steps / Trace / Conversation / Info tab",
     },
+    Binding {
+        group: "Focus",
+        keys: "m / M",
+        action: "Maximize focused pane",
+    },
+    Binding {
+        group: "Focus",
+        keys: "Z",
+        action: "Maximize graph",
+    },
+    Binding {
+        group: "Focus",
+        keys: "Alt+j / Alt+k",
+        action: "Resize graph/inspector split",
+    },
     // Graph
     Binding {
         group: "Graph",

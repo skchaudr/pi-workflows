@@ -13,6 +13,7 @@ mod help;
 mod node_modal;
 mod node_walk;
 mod notice;
+pub mod pane_zoom;
 mod run_command;
 mod run_filter;
 mod theme_picker;
@@ -294,6 +295,16 @@ enum Focus {
     Inspector,
 }
 
+impl Focus {
+    fn pane_id(self) -> pane_zoom::PaneId {
+        match self {
+            Focus::Runs => pane_zoom::PaneId::Runs,
+            Focus::Graph => pane_zoom::PaneId::Graph,
+            Focus::Inspector => pane_zoom::PaneId::Inspector,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InspectorTab {
     Steps,
@@ -472,6 +483,8 @@ struct App {
     notice: Option<Notice>,
     /// Program to run in the foreground once the current key is handled.
     external: Option<external_launch::ExternalAction>,
+    /// Pane zoom, graph/inspector split delta, and sidebar hide.
+    pub pane_layout: pane_zoom::PaneLayoutState,
     /// Pane rectangles from the last draw, for mouse routing.
     frame_rect: Rect,
     main_rect: Rect,
@@ -669,6 +682,7 @@ fn create_app(
         cancel_confirm: None,
         notice: None,
         external: None,
+        pane_layout: pane_zoom::PaneLayoutState::default(),
         frame_rect: Rect::default(),
         main_rect: Rect::default(),
         runs_rect: Rect::default(),
@@ -1605,6 +1619,11 @@ fn handle_key(app: &mut App, summaries: &[RunSummary], key: KeyEvent) {
             }
         }
     }
+    if let Some(action) = pane_zoom::classify_zoom_key(key, app.pane_layout.zoom) {
+        app.pane_layout
+            .apply_action(action, app.focus.pane_id());
+        return;
+    }
     match key.code {
         KeyCode::Char('q') => app.quit = true,
         KeyCode::Char(',') => app.open_theme_picker(),
@@ -2163,41 +2182,38 @@ fn draw(frame: &mut Frame, app: &mut App, summaries: &[RunSummary]) {
     let transport = vertical[1];
 
     let sidebar_collapsed = app.sidebar_collapsed || (!app.sidebar_explicit && area.width < 100);
-    let (runs_area, main_area) = if app.show_sidebar {
-        let max_sidebar = body.width.saturating_sub(MIN_MAIN_WIDTH);
-        let sidebar_width = if sidebar_collapsed {
+    let runs_width = if app.show_sidebar {
+        if sidebar_collapsed {
             8
         } else {
+            let max_sidebar = body.width.saturating_sub(MIN_MAIN_WIDTH);
             app.sidebar_width
                 .clamp(MIN_SIDEBAR_WIDTH, max_sidebar.max(MIN_SIDEBAR_WIDTH))
-        };
-        let columns = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Length(sidebar_width),
-                Constraint::Min(MIN_MAIN_WIDTH),
-            ])
-            .split(body);
-        (Some(columns[0]), columns[1])
+        }
     } else {
-        (None, body)
+        0
     };
+    let inspector_height = resolved_inspector_height(body.height, app.inspector_height);
+    let rects = app
+        .pane_layout
+        .compute_body_rects(body, runs_width, inspector_height);
+    let main_area = rects.main_rect;
+    app.main_rect = rects.main_rect;
+    app.graph_rect = rects.graph_rect;
+    app.inspector_rect = rects.inspector_rect;
+    app.runs_rect = rects.runs_rect;
+    let sidebar_collapsed = rects.sidebar_collapsed;
+    let zoom_badge = app.pane_layout.status_badge();
 
-    let inspector_height = resolved_inspector_height(main_area.height, app.inspector_height);
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(MIN_GRAPH_HEIGHT),
-            Constraint::Length(inspector_height),
-        ])
-        .split(main_area);
-    app.main_rect = main_area;
-    app.graph_rect = rows[0];
-    app.inspector_rect = rows[1];
-    app.runs_rect = runs_area.unwrap_or_default();
-
-    if let Some(runs_area) = runs_area {
-        draw_runs(frame, app, summaries, runs_area, sidebar_collapsed);
+    if rects.runs_rect.width > 0 && rects.runs_rect.height > 0 {
+        draw_runs(
+            frame,
+            app,
+            summaries,
+            rects.runs_rect,
+            sidebar_collapsed,
+            zoom_badge,
+        );
     }
 
     let Some(run_id) = app.selected_run.clone() else {
@@ -2219,7 +2235,7 @@ fn draw(frame: &mut Frame, app: &mut App, summaries: &[RunSummary]) {
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
-                        .title(" piw ")
+                        .title(with_status_badge(" piw ", zoom_badge))
                         .style(Style::default().bg(palette.panel_bg))
                         .border_style(pane_border(&palette, false)),
                 ),
@@ -2280,7 +2296,7 @@ fn draw(frame: &mut Frame, app: &mut App, summaries: &[RunSummary]) {
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title(" piw ")
+                    .title(with_status_badge(" piw ", zoom_badge))
                     .style(Style::default().bg(palette.panel_bg))
                     .border_style(pane_border(&palette, false)),
             ),
@@ -2401,15 +2417,19 @@ fn draw(frame: &mut Frame, app: &mut App, summaries: &[RunSummary]) {
     let content_size = rendered_graph
         .map(|rendered| rendered.canvas.size())
         .unwrap_or_default();
+    let graph_visible = graph_rect.width > 0 && graph_rect.height > 0;
     let mut offset = app.graph_offset;
-    if follow {
-        let focused = followed_node_id
-            .and_then(|node_id| app.graph_nodes.iter().find(|node| node.node_id == node_id));
-        offset = centered_camera(focused, content_size, (inner_width, inner_height));
+    if graph_visible {
+        if follow {
+            let focused = followed_node_id.and_then(|node_id| {
+                app.graph_nodes.iter().find(|node| node.node_id == node_id)
+            });
+            offset = centered_camera(focused, content_size, (inner_width, inner_height));
+        }
+        offset.0 = clamp_camera_axis(offset.0, content_size.0, inner_width);
+        offset.1 = clamp_camera_axis(offset.1, content_size.1, inner_height);
+        app.graph_offset = offset;
     }
-    offset.0 = clamp_camera_axis(offset.0, content_size.0, inner_width);
-    offset.1 = clamp_camera_axis(offset.1, content_size.1, inner_height);
-    app.graph_offset = offset;
     let rows_runs = rendered_graph
         .map(|rendered| {
             rendered
@@ -2439,6 +2459,9 @@ fn draw(frame: &mut Frame, app: &mut App, summaries: &[RunSummary]) {
     }
     if local_stale {
         graph_flags.push("STALE DATA");
+    }
+    if let Some(badge) = zoom_badge {
+        graph_flags.push(badge);
     }
     if let Some(status) = remote_status {
         graph_flags.push(match status {
@@ -2499,9 +2522,14 @@ fn draw(frame: &mut Frame, app: &mut App, summaries: &[RunSummary]) {
 
     // Inspector pane. Tabs get their own control row so their complete visual
     // labels are also their complete mouse targets.
+    let inspector_title = if app.graph_rect.width == 0 || app.graph_rect.height == 0 {
+        with_status_badge(" Inspector · t or 1-4: tab ", zoom_badge)
+    } else {
+        " Inspector · t or 1-4: tab ".to_string()
+    };
     let inspector_block = Block::default()
         .borders(Borders::ALL)
-        .title(" Inspector · t or 1-4: tab ")
+        .title(inspector_title)
         .style(Style::default().bg(palette.panel_bg))
         .border_style(pane_border(&palette, focus == Focus::Inspector));
     let inspector_inner = inspector_block.inner(inspector_rect);
@@ -2783,12 +2811,27 @@ fn pane_border(palette: &Palette, focused: bool) -> Style {
     })
 }
 
+fn with_status_badge(title: &str, badge: Option<&str>) -> String {
+    match badge {
+        Some(badge) => {
+            let trimmed = title.trim();
+            if trimmed.is_empty() {
+                format!(" {badge} ")
+            } else {
+                format!(" {trimmed} · {badge} ")
+            }
+        }
+        None => title.to_string(),
+    }
+}
+
 fn draw_runs(
     frame: &mut Frame,
     app: &mut App,
     summaries: &[RunSummary],
     area: Rect,
     collapsed: bool,
+    zoom_badge: Option<&str>,
 ) {
     let palette = &app.palette;
     let height = area.height.saturating_sub(2) as usize;
@@ -2878,13 +2921,19 @@ fn draw_runs(
             Line::from(spans)
         })
         .collect();
+    let runs_title = if collapsed {
+        " R ".to_string()
+    } else {
+        app.run_filter.title(runs.len(), summaries.len())
+    };
+    let runs_title = if app.graph_rect.width == 0 || app.graph_rect.height == 0 {
+        with_status_badge(&runs_title, zoom_badge)
+    } else {
+        runs_title
+    };
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(if collapsed {
-            " R ".to_string()
-        } else {
-            app.run_filter.title(runs.len(), summaries.len())
-        })
+        .title(runs_title)
         .style(Style::default().bg(palette.panel_bg))
         .border_style(pane_border(palette, app.focus == Focus::Runs));
     frame.render_widget(
