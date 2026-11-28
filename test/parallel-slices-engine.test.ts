@@ -279,4 +279,110 @@ describe("parallel-slices engine", () => {
       await expect(fs.stat(path.join(dir, "tasks_out"))).rejects.toThrow();
     });
   });
+
+  describe("agy quota", () => {
+    // The panel as agy draws it: the bar and the figure share a line.
+    const panel = (weekly: string, fiveHour: string) =>
+      [
+        "└ Models & Quota",
+        "  Account: someone@example.com",
+        "GEMINI MODELS",
+        "  Models within this group: Gemini 4 Neon, Gemini 4 Carbon",
+        "  Weekly Limit Remaining",
+        `    [████████████████░░] ${weekly}%`,
+        "    Refreshes in 6d 19h 0m",
+        "  Five Hour Limit Remaining",
+        `    [██████████████░░░░] ${fiveHour}%`,
+        "    Refreshes in 2h 4m",
+        "CLAUDE AND GPT MODELS",
+        "  Weekly Limit Remaining",
+        "    [██████████████████] 100.00%",
+        "    Quota available",
+        "  Five Hour Limit Remaining",
+        "    [██████████████████] 100.00%",
+        "    Quota available",
+      ].join("\n");
+
+    async function reading(name: string, weekly: string, fiveHour: string) {
+      const file = path.join(dir, `${name}.txt`);
+      await fs.writeFile(file, panel(weekly, fiveHour));
+      return file;
+    }
+
+    it("reads both limits of every model group from the panel", async () => {
+      const result = run(["quota", "--from", await reading("now", "96.58", "86.32"), "--json"]);
+      expect(result.status).toBe(0);
+      const { groups } = JSON.parse(result.stdout);
+      expect(groups["GEMINI MODELS"]).toEqual({
+        weekly: 96.58,
+        weeklyNote: "Refreshes in 6d 19h 0m",
+        fiveHour: 86.32,
+        fiveHourNote: "Refreshes in 2h 4m",
+      });
+      expect(groups["CLAUDE AND GPT MODELS"].fiveHour).toBe(100);
+    });
+
+    it("fails when the text holds no panel", async () => {
+      const file = path.join(dir, "empty.txt");
+      await fs.writeFile(file, "Welcome\n> \n");
+      const result = run(["quota", "--from", file]);
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain("could not read agy's usage panel");
+    });
+
+    it("shows what was used since a saved reading, and says when a limit refreshed", async () => {
+      const before = path.join(dir, "before.json");
+      await fs.writeFile(
+        before,
+        run(["quota", "--from", await reading("before", "96.58", "86.32"), "--json"]).stdout,
+      );
+      const used = run([
+        "quota",
+        "--from",
+        await reading("after", "95.89", "81.10"),
+        "--since",
+        before,
+      ]);
+      expect(used.stdout).toContain(
+        "GEMINI MODELS: week 96.58→95.89% (used 0.69) · 5h 86.32→81.10% (used 5.22)",
+      );
+      const refreshed = run([
+        "quota",
+        "--from",
+        await reading("later", "95.89", "100.00"),
+        "--since",
+        before,
+      ]);
+      expect(refreshed.stdout).toContain("5h 86.32→100.00% (limit refreshed)");
+    });
+
+    it("totals a run from the earliest reading before a slice to the latest one after", async () => {
+      const returns = path.join(dir, "run_out", "_returns");
+      await fs.mkdir(returns, { recursive: true });
+      const slice = (beforeAt: string, afterAt: string, before: number, after: number) => ({
+        quota: {
+          group: "GEMINI MODELS",
+          beforeAt,
+          afterAt,
+          before: { weekly: before, fiveHour: before },
+          after: { weekly: after, fiveHour: after },
+        },
+      });
+      await fs.writeFile(
+        path.join(returns, "a.usage.json"),
+        JSON.stringify(slice("2026-11-28T03:00:05+00:00", "2026-11-28T03:09:00+00:00", 89, 80)),
+      );
+      await fs.writeFile(
+        path.join(returns, "b.usage.json"),
+        JSON.stringify(slice("2026-11-28T03:00:00+00:00", "2026-11-28T03:04:00+00:00", 90, 86)),
+      );
+      await fs.writeFile(path.join(returns, "c.usage.json"), JSON.stringify({ quota: null }));
+      const result = run(["quota", "--run", path.join(dir, "run_out")]);
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain("GEMINI MODELS · 2 slices");
+      expect(result.stdout).toContain(
+        "week 90.00→80.00% (used 10.00) · 5h 90.00→80.00% (used 10.00)",
+      );
+    });
+  });
 });

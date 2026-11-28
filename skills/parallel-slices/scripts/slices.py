@@ -49,6 +49,7 @@ USAGE = """usage: slices <command> ...
   runs                recorded runs, newest first
   status RUN          per-slice result of a run: a tasks file, its _out dir, or an index from `runs` (1 = newest)
   ledger              the run ledger (references/runs.md)
+  quota               agy's limits left; --since a saved reading or --run an output dir shows what was used
 
 Run records go to runs.jsonl in $SLICES_STATE_DIR (default ~/.local/state/slices).
 `slices acp --help` and `slices send --help` list the command flags."""
@@ -755,6 +756,169 @@ def cmd_send(argv):
     return 1 if failed else 0
 
 
+QUOTA_KEYS = (("weekly", "week"), ("fiveHour", "5h"))
+ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b[=>()][0-9A-Za-z]?")
+
+
+def parse_quota_panel(text: str) -> dict:
+    """Limits left, in percent, from agy's usage panel: {group: {weekly, fiveHour, and a note for each}}."""
+    groups, group, key = {}, None, None
+    for line in (l.strip() for l in ANSI_RE.sub("\n", text).splitlines()):
+        if re.fullmatch(r"[A-Z][A-Z ]* MODELS", line):
+            group, key = groups.setdefault(line, {}), None
+        elif group is None:
+            continue
+        elif line.startswith("Weekly Limit Remaining"):
+            key = "weekly"
+        elif line.startswith("Five Hour Limit Remaining"):
+            key = "fiveHour"
+        elif key and (m := re.search(r"(\d+(?:\.\d+)?)%", line)):
+            group[key] = float(m.group(1))
+        elif key and line.startswith(("Refreshes in", "Quota available")):
+            group[key + "Note"] = line
+    return {name: g for name, g in groups.items() if all(k in g for k, _ in QUOTA_KEYS)}
+
+
+def read_agy_quota(limit: float = 25.0):
+    """One reading of agy's limits, taken from its usage panel on a pseudo-terminal.
+
+    agy reports its limits nowhere else: not in the ACP stream, a subcommand or a file. Opening the
+    panel sends no prompt and uses no quota. Returns None when the panel could not be read.
+    """
+    try:
+        import fcntl, pty, select, struct, termios
+        pid, fd = pty.fork()
+    except (ImportError, OSError):
+        return None
+    if pid == 0:
+        try:
+            os.execvp("agy", ["agy"])
+        finally:
+            os._exit(127)
+    deadline = time.time() + limit
+    buf = b""
+
+    def pump(quiet: float) -> bool:
+        """Read until `quiet` seconds pass with no output; False at the deadline or when agy has gone."""
+        nonlocal buf
+        last = time.time()
+        while time.time() < deadline:
+            if select.select([fd], [], [], 0.1)[0]:
+                try:
+                    chunk = os.read(fd, 65536)
+                except OSError:
+                    return False
+                if not chunk:
+                    return False
+                buf += chunk
+                last = time.time()
+            elif time.time() - last >= quiet:
+                return True
+        return False
+
+    groups = {}
+    try:
+        fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 60, 140, 0, 0))
+        if pump(1.5):
+            start = len(buf)
+            os.write(fd, b"/usage")
+            pump(0.4)
+            os.write(fd, b"\r")
+            while not groups and pump(1.0):
+                groups = parse_quota_panel(buf[start:].decode("utf-8", "replace"))
+    except OSError:
+        pass
+    finally:
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            try:
+                os.kill(pid, sig)
+                if any(os.waitpid(pid, os.WNOHANG)[0] or time.sleep(0.1) for _ in range(20)):
+                    break
+            except (ProcessLookupError, ChildProcessError):
+                break
+        os.close(fd)
+    if not groups:
+        return None
+    return {"readAt": datetime.now(timezone.utc).isoformat(timespec="seconds"), "groups": groups}
+
+
+def quota_record(before, after, model: str):
+    """Two readings and what was used between them, for the model's group. None without both."""
+    if not before or not after:
+        return None
+    name = next((n for n in before["groups"] if n.split()[0].lower() in model.lower() and n in after["groups"]), None)
+    if name is None:
+        return None
+    b, a = before["groups"][name], after["groups"][name]
+    # A limit that went up refreshed between the readings, so nothing can be said about it.
+    used = {key: round(b[key] - a[key], 2) if a[key] <= b[key] else None for key, _ in QUOTA_KEYS}
+    return {"group": name, "beforeAt": before["readAt"], "afterAt": after["readAt"], "before": b, "after": a, "used": used}
+
+
+def quota_line(quota) -> str:
+    if not quota:
+        return "unknown"
+    bits = []
+    for key, label in QUOTA_KEYS:
+        used = quota["used"][key]
+        bits.append(
+            f"{label} {quota['before'][key]:.2f}→{quota['after'][key]:.2f}% "
+            + (f"(used {used:.2f})" if used is not None else "(limit refreshed)")
+        )
+    return " · ".join(bits)
+
+
+def run_quota(out: Path):
+    """A whole run's use: from the earliest reading before any slice to the latest one after."""
+    returns = out / "_returns" if (out / "_returns").is_dir() else out
+    quotas = [q for f in sorted(returns.glob("*.usage.json")) if (q := json.loads(f.read_text(encoding="utf-8")).get("quota"))]
+    if not quotas:
+        return None, 0
+    first, last = min(quotas, key=lambda q: q["beforeAt"]), max(quotas, key=lambda q: q["afterAt"])
+    before = {"readAt": first["beforeAt"], "groups": {first["group"]: first["before"]}}
+    after = {"readAt": last["afterAt"], "groups": {last["group"]: last["after"]}}
+    return quota_record(before, after, first["group"]), len(quotas)
+
+
+def cmd_quota(argv):
+    ap = argparse.ArgumentParser(
+        prog="slices quota",
+        description="agy's limits left, read from its usage panel. Take one reading before a run and one after to see what the run used.",
+    )
+    ap.add_argument("--json", action="store_true", help="print the reading as JSON, to save for --since")
+    ap.add_argument("--since", type=Path, help="a reading saved with --json: print what was used since it")
+    ap.add_argument("--run", type=Path, help="a run's output directory: what the run used, from its usage files; reads nothing live")
+    ap.add_argument("--from", dest="panel", type=Path, help="parse saved panel text instead of opening agy")
+    args = ap.parse_args(argv)
+
+    if args.run:
+        quota, n = run_quota(args.run.expanduser().resolve())
+        if not quota:
+            fail(f"no usage file in {args.run} holds a quota reading")
+        print(f"{quota['group']} · {plural(n, 'slice')} · {quota['beforeAt']} to {quota['afterAt']}")
+        print(quota_line(quota))
+        return 0
+
+    if args.panel:
+        groups = parse_quota_panel(args.panel.read_text(encoding="utf-8"))
+        reading = {"readAt": datetime.now(timezone.utc).isoformat(timespec="seconds"), "groups": groups} if groups else None
+    else:
+        reading = read_agy_quota()
+    if not reading:
+        fail("could not read agy's usage panel")
+    if args.json:
+        print(json.dumps(reading, indent=2))
+        return 0
+    earlier = json.loads(args.since.read_text(encoding="utf-8")) if args.since else None
+    for name, g in reading["groups"].items():
+        if earlier:
+            quota = quota_record(earlier, reading, name)
+            print(f"{name}: {quota_line(quota)}" + (f" · since {earlier['readAt']}" if quota else ""))
+        else:
+            print(f"{name}: " + " · ".join(f"{label} {g[key]:.2f}% left ({g.get(key + 'Note', '')})" for key, label in QUOTA_KEYS))
+    return 0
+
+
 def build_acp_parser():
     ap = argparse.ArgumentParser(
         prog="slices acp",
@@ -847,7 +1011,6 @@ def process_acp_event_stream(
     effective_config = {}
     legacy_current_model = None
     tier_name = None
-    quota_pct = "unknown"
     thought_chunks = 0
     thought_chars = 0
     last_thought_headline = ""
@@ -928,9 +1091,6 @@ def process_acp_event_stream(
                     tier = meta_agy.get("tier")
                     if isinstance(tier, dict) and isinstance(tier.get("name"), str):
                         tier_name = tier["name"]
-                    for qk in ("quotaPercentage", "quotaRemainingPct", "remainingPercentage", "quota"):
-                        if qk in meta_agy and meta_agy[qk] is not None:
-                            quota_pct = str(meta_agy[qk])
                 if isinstance(res.get("stopReason"), str):
                     stop_reason = res["stopReason"]
                 if isinstance(res.get("usage"), dict):
@@ -964,10 +1124,6 @@ def process_acp_event_stream(
                         + (f" · tier={tier_name}" if tier_name else ""),
                         flush=True,
                     )
-                elif kind == "usage_update":
-                    for qk in ("quotaPercentage", "quotaRemainingPct", "remainingPercentage"):
-                        if qk in upd and upd[qk] is not None:
-                            quota_pct = str(upd[qk])
                 elif kind in ("tool_call", "tool_call_update"):
                     elapsed = time.time() - start_time
                     t_name = (
@@ -1039,7 +1195,6 @@ def process_acp_event_stream(
         "effective_config": effective_config,
         "legacy_current_model": legacy_current_model,
         "tier_name": tier_name,
-        "quota_pct": quota_pct,
         "thought_chunks": thought_chunks,
         "thought_chars": thought_chars,
         "first_code_at": first_code_at,
@@ -1161,6 +1316,8 @@ def cmd_acp(argv):
     raw_events_path = out / "_returns" / f"{cid}.events.jsonl"
     raw_return_path = out / "_returns" / f"{cid}.md"
     usage_path = out / "_returns" / f"{cid}.usage.json"
+    reads_quota = not args.replay_events and Path(args.agent.split()[0]).name == "agy"
+    quota_before = read_agy_quota() if reads_quota else None
     start_time = time.time()
     exit_code = 0
 
@@ -1230,6 +1387,8 @@ def cmd_acp(argv):
         shutil.rmtree(scratch_root, ignore_errors=True)
 
     total_seconds = time.time() - start_time
+    quota = quota_record(quota_before, read_agy_quota() if quota_before else None, args.model)
+    quota_str = quota_line(quota)
     raw_return = stream_info["raw_return"]
     raw_return_path.parent.mkdir(parents=True, exist_ok=True)
     raw_return_path.write_text(raw_return, encoding="utf-8")
@@ -1241,7 +1400,6 @@ def cmd_acp(argv):
     first_code_at = stream_info["first_code_at"]
     stop_reason = stream_info["stop_reason"]
     rpc_errors = stream_info["rpc_errors"]
-    quota_pct = stream_info["quota_pct"]
     usage = stream_info["usage"]
 
     reasons = []
@@ -1298,7 +1456,7 @@ def cmd_acp(argv):
         "toolCalls": tool_calls,
         "returnedBytes": returned_bytes,
         "returnedLines": returned_lines,
-        "quotaPercentage": quota_pct,
+        "quota": quota,
         "stopReason": stop_reason,
         "usage": usage,
         "stagedFiles": [str(p) for p in staged_paths],
@@ -1319,7 +1477,7 @@ def cmd_acp(argv):
             f"total: {paint(f'{total_seconds:.1f}s', 'bold')} · "
             f"tool calls: {paint('0', 'bold', 'green')} · "
             f"size: {paint(f'{returned_bytes:,} bytes ({returned_lines} lines)', 'bold')} · "
-            f"quota: {dim(quota_pct)}"
+            f"quota: {dim(quota_str)}"
         )
         for p in staged_paths:
             print(f"  staged: {dim(str(p))}")
@@ -1336,14 +1494,14 @@ def cmd_acp(argv):
             f"total: {total_seconds:.1f}s · "
             f"tool calls: {paint(str(len(tool_calls)), 'bold', 'red' if tool_calls else 'green')} · "
             f"size: {returned_bytes:,} bytes · "
-            f"quota: {dim(quota_pct)}"
+            f"quota: {dim(quota_str)}"
         )
         print(f"  events: {dim(str(raw_events_path))}")
         print(f"  raw:    {dim(str(raw_return_path))}")
         return 1
 
 
-COMMANDS = {"acp": cmd_acp, "send": cmd_send, "show": cmd_show, "runs": cmd_runs, "status": cmd_status, "ledger": cmd_ledger}
+COMMANDS = {"acp": cmd_acp, "quota": cmd_quota,"send": cmd_send, "show": cmd_show, "runs": cmd_runs, "status": cmd_status, "ledger": cmd_ledger}
 
 
 def main(argv=None):
