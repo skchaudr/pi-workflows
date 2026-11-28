@@ -1387,8 +1387,19 @@ def cmd_acp(argv):
         shutil.rmtree(scratch_root, ignore_errors=True)
 
     total_seconds = time.time() - start_time
-    quota = quota_record(quota_before, read_agy_quota() if quota_before else None, args.model)
-    quota_str = quota_line(quota)
+    quota_after = read_agy_quota() if quota_before else None
+    quota = quota_record(quota_before, quota_after, args.model)
+    # Without both readings there is no figure; say which one is missing, and keep the one that worked.
+    quota_missing = None
+    if reads_quota and not quota:
+        quota_missing = (
+            "the reading before the send failed"
+            if not quota_before
+            else "the reading after the return failed"
+            if not quota_after
+            else f"no limit group matches model {args.model}"
+        )
+    quota_str = quota_line(quota) + (f" ({quota_missing})" if quota_missing else "")
     raw_return = stream_info["raw_return"]
     raw_return_path.parent.mkdir(parents=True, exist_ok=True)
     raw_return_path.write_text(raw_return, encoding="utf-8")
@@ -1457,6 +1468,8 @@ def cmd_acp(argv):
         "returnedBytes": returned_bytes,
         "returnedLines": returned_lines,
         "quota": quota,
+        "quotaMissing": quota_missing,
+        "quotaBefore": quota_before if quota_missing else None,
         "stopReason": stop_reason,
         "usage": usage,
         "stagedFiles": [str(p) for p in staged_paths],
